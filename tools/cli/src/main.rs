@@ -1,5 +1,6 @@
 mod file_store;
 mod pair;
+mod text;
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -48,6 +49,13 @@ enum Command {
     },
     /// 기기 이름, 에포크, 구성원 수, 릴레이 연결 상태를 보여 준다
     Status,
+    /// 그룹의 다른 기기들에게 텍스트를 보낸다 (텍스트를 생략하면 표준 입력을 읽는다)
+    Send {
+        /// 보낼 텍스트
+        text: Option<String>,
+    },
+    /// 다른 기기가 보낸 텍스트를 받아 한 건씩 출력한다
+    Listen,
     /// 새 기기를 초대한다: 코드와 QR을 보여 주고 참여 요청을 기다린다
     Invite,
     /// 초대 코드(또는 링크)로 그룹에 참여한다
@@ -178,6 +186,14 @@ async fn main() -> anyhow::Result<()> {
             };
             print!("{}", render_status(&status, relay));
             Ok(())
+        }
+        Some(Command::Send { text }) => {
+            let app = std::sync::Arc::new(open_profile(&args)?);
+            text::send(app, &args.relay_url(), text.clone()).await
+        }
+        Some(Command::Listen) => {
+            let app = std::sync::Arc::new(open_profile(&args)?);
+            text::listen(app, &args.relay_url()).await
         }
         Some(Command::Invite) => {
             let app = open_profile(&args)?;

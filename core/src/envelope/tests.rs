@@ -110,6 +110,15 @@ fn roundtrip_image_and_control() {
 }
 
 #[test]
+fn text_size_limit_is_enforced_on_receive() {
+    let mut f = Fixture::new();
+    let at_limit = f.text(&"a".repeat(MAX_TEXT_BYTES), NOW);
+    assert!(f.recv(&at_limit.bytes).is_ok());
+    let over = f.text(&"a".repeat(MAX_TEXT_BYTES + 1), NOW);
+    assert_eq!(f.recv(&over.bytes), Err(DropReason::TooLarge));
+}
+
+#[test]
 fn step1_malformed_bytes() {
     let mut f = Fixture::new();
     assert_eq!(f.recv(&[0xff, 0xff, 0xff]), Err(DropReason::Malformed));

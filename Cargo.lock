@@ -389,6 +389,7 @@ dependencies = [
  "clip-ferry-core",
  "futures-util",
  "prost",
+ "tempfile",
  "tokio",
  "tokio-tungstenite",
  "tracing",

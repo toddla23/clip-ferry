@@ -45,7 +45,7 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            max_frame_bytes: 512 * 1024,
+            max_frame_bytes: 2 * 1024 * 1024,
             max_channels_per_conn: 8,
             max_frames_per_sec: 50,
             max_bytes_per_min: 64 * 1024 * 1024,

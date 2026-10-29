@@ -17,6 +17,9 @@ pub use receive::{DropReason, Received, Receiver, Source};
 /// 봉투 버전.
 pub const VERSION: u32 = 1;
 
+/// 텍스트 한 건의 최대 크기(UTF-8 바이트). 보내는 쪽도 받는 쪽도 지킨다.
+pub const MAX_TEXT_BYTES: usize = 1024 * 1024;
+
 const SIG_DOMAIN: &[u8] = b"clip-ferry v1 sig";
 const AAD_PREFIX: &[u8] = b"clip-ferry/v1";
 
