@@ -1,0 +1,23 @@
+/target
+**/*.rs.bk
+
+# 노드/Tauri
+node_modules/
+dist/
+
+# Android / iOS
+.gradle/
+build/
+local.properties
+xcuserdata/
+DerivedData/
+
+# 개발용 CLI 프로필(비밀 포함 가능)
+/.cf-profiles/
+/received/
+
+# IDE / OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

@@ -1,0 +1,12 @@
+[package]
+name = "clip-ferry-cli"
+description = "clip-ferry 개발·검증용 CLI"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+clip-ferry-core = { path = "../../core" }
