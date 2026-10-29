@@ -1,4 +1,5 @@
 mod file_store;
+mod manage;
 mod pair;
 mod text;
 
@@ -49,6 +50,18 @@ enum Command {
     },
     /// 기기 이름, 에포크, 구성원 수, 릴레이 연결 상태를 보여 준다
     Status,
+    /// 그룹의 기기 목록과 에포크, 상태를 보여 준다
+    Devices,
+    /// 이 기기의 이름을 바꾼다
+    Rename {
+        /// 새 이름
+        name: String,
+    },
+    /// 기기를 제거한다 (키가 회전되어 제거된 기기는 더 받지 못한다)
+    Remove {
+        /// 기기 이름 또는 device_id 앞자리(hex 4자 이상)
+        target: String,
+    },
     /// 그룹의 다른 기기들에게 텍스트를 보낸다 (텍스트를 생략하면 표준 입력을 읽는다)
     Send {
         /// 보낼 텍스트
@@ -144,11 +157,12 @@ fn render_status(status: &Status, relay: &str) -> String {
         .epoch
         .map_or("그룹 없음".to_string(), |e| e.to_string());
     format!(
-        "기기 이름: {}\ndevice_id: {}\n에포크: {}\n구성원: {}명\n릴레이: {}\n",
+        "기기 이름: {}\ndevice_id: {}\n에포크: {}\n구성원: {}명\n상태: {}\n릴레이: {}\n",
         status.device_name,
         status.device_id.short_hex(),
         epoch,
         status.member_count,
+        manage::health_label(status.health),
         relay
     )
 }
@@ -186,6 +200,15 @@ async fn main() -> anyhow::Result<()> {
             };
             print!("{}", render_status(&status, relay));
             Ok(())
+        }
+        Some(Command::Devices) => manage::devices(&open_profile(&args)?),
+        Some(Command::Rename { name }) => {
+            let app = std::sync::Arc::new(open_profile(&args)?);
+            manage::rename(app, &args.relay_url(), name).await
+        }
+        Some(Command::Remove { target }) => {
+            let app = std::sync::Arc::new(open_profile(&args)?);
+            manage::remove(app, &args.relay_url(), target).await
         }
         Some(Command::Send { text }) => {
             let app = std::sync::Arc::new(open_profile(&args)?);

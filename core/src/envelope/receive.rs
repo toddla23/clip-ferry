@@ -36,6 +36,8 @@ pub enum DropReason {
     Duplicate,
     OutsideTimeWindow,
     FromSelf,
+    /// 이전 에포크로 왔지만 지금은 그룹에 없는 기기가 보냈다 (제거된 기기)
+    SenderRemoved,
 }
 
 /// 검증을 모두 통과한 메시지.
@@ -75,6 +77,11 @@ impl Receiver {
 
     pub fn remove_epoch(&mut self, epoch: u64) {
         self.epochs.remove(&epoch);
+    }
+
+    /// 파이프라인 밖(앱 계층)에서 버린 메시지도 같은 카운터에 센다.
+    pub(crate) fn count_drop(&mut self, reason: DropReason) {
+        *self.drops.entry(reason).or_insert(0) += 1;
     }
 
     /// 이유별로 버린 메시지 수.
