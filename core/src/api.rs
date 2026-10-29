@@ -7,7 +7,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use zeroize::Zeroizing;
 
 use crate::crypto::{ChannelId, CryptoError, DeviceId, DeviceKeys, DeviceTag, GroupKey, StateKey};
-use crate::envelope::{self, EnvelopeError, EpochContext};
+use crate::envelope::{
+    self, DropReason, EnvelopeError, EpochContext, Receiver, Source, MAX_TEXT_BYTES,
+};
 use crate::group;
 use crate::pairing::{
     self, Identity, Invite, Inviter, JoinedGroup, Joiner, JoinerInfo, PairingError,
@@ -48,6 +50,10 @@ pub enum Error {
     Envelope(#[from] EnvelopeError),
     #[error("받은 그룹 정보가 이 기기와 맞지 않습니다")]
     BadGroup,
+    #[error("보낼 텍스트가 비어 있습니다")]
+    EmptyText,
+    #[error("텍스트가 너무 큽니다 (최대 1 MiB)")]
+    TextTooLarge,
     #[error("로컬 상태 파일을 열 수 없습니다. 손상되었거나 변조되었을 수 있습니다")]
     StateCorrupt,
     #[error("로컬 상태와 비밀 저장소가 서로 맞지 않습니다. 한쪽만 남아 있습니다")]
@@ -103,6 +109,14 @@ pub struct Approval {
     pub joiner: JoinerInfo,
 }
 
+/// 봉인된 메시지. `bytes`를 `channel_id` 채널에 게시한다.
+#[derive(Debug)]
+pub struct SealedMessage {
+    pub channel_id: ChannelId,
+    pub msg_id: [u8; 16],
+    pub bytes: Vec<u8>,
+}
+
 /// 릴레이에 접속할 때 쓰는 값.
 #[derive(Debug, Clone)]
 pub struct Connection {
@@ -111,11 +125,84 @@ pub struct Connection {
     pub device_tag: DeviceTag,
 }
 
+/// 받은 텍스트.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Clip {
+    pub from: DeviceId,
+    pub from_name: String,
+    pub text: String,
+    pub created_at_ms: u64,
+}
+
+/// `handle_deliver`가 받은 메시지로 한 일.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Incoming {
+    Clip(Clip),
+    /// 로스터가 바뀌었다 (기기 목록을 다시 그린다).
+    DevicesChanged,
+    /// 처리할 것이 없는 메시지 (아직 다루지 않는 종류 등).
+    Nothing,
+}
+
 struct Device {
     keys: DeviceKeys,
     state_key: StateKey,
     state: pb::LocalState,
     group_key: Option<GroupKey>,
+    receiver: Option<Receiver>,
+}
+
+impl Device {
+    /// 현재 로스터로 수신 검증 파이프라인을 맞춘다 (중복 목록은 유지).
+    fn sync_receiver(&mut self) {
+        let (Some(group_key), Some(roster)) = (&self.group_key, &self.state.roster) else {
+            return;
+        };
+        let ctx = EpochContext::new(group_key, roster.epoch, roster_sign_pubs(roster));
+        let receiver = self
+            .receiver
+            .get_or_insert_with(|| Receiver::new(self.keys.device_id()));
+        receiver.add_epoch(ctx);
+    }
+
+    fn send_context(&self) -> Result<EpochContext, Error> {
+        let (Some(group_key), Some(roster)) = (&self.group_key, &self.state.roster) else {
+            return Err(Error::NoGroup);
+        };
+        Ok(EpochContext::new(
+            group_key,
+            roster.epoch,
+            roster_sign_pubs(roster),
+        ))
+    }
+}
+
+fn roster_sign_pubs(roster: &pb::Roster) -> Vec<[u8; 32]> {
+    roster
+        .members
+        .iter()
+        .filter_map(|m| <[u8; 32]>::try_from(m.sign_pub.as_slice()).ok())
+        .collect()
+}
+
+/// 로스터의 각 구성원이 `device_id == SHA-256(sign_pub)[0..16]`를 만족하는지.
+fn roster_is_consistent(roster: &pb::Roster) -> bool {
+    roster.members.iter().all(|m| {
+        <[u8; 32]>::try_from(m.sign_pub.as_slice())
+            .is_ok_and(|p| DeviceId::from_sign_pub(&p).0.as_slice() == m.device_id.as_slice())
+            && m.dh_pub.len() == 32
+    })
+}
+
+/// 동시에 수정된 로스터 중 어느 쪽을 채택할지: `version`이 크면, 같으면 직렬화 해시가 큰 쪽.
+fn roster_wins(new: &pb::Roster, current: &pb::Roster) -> bool {
+    use prost::Message;
+    use sha2::{Digest, Sha256};
+    if new.version != current.version {
+        return new.version > current.version;
+    }
+    Sha256::digest(new.encode_to_vec()).as_slice()
+        > Sha256::digest(current.encode_to_vec()).as_slice()
 }
 
 pub struct ClipFerry {
@@ -148,12 +235,15 @@ impl ClipFerry {
                     Some(roster) => Some(load_group_key(secrets.as_ref(), roster.epoch)?),
                     None => None,
                 };
-                Some(Device {
+                let mut dev = Device {
                     keys,
                     state_key,
                     state,
                     group_key,
-                })
+                    receiver: None,
+                };
+                dev.sync_receiver();
+                Some(dev)
             }
             _ => return Err(Error::StateInconsistent),
         };
@@ -197,6 +287,7 @@ impl ClipFerry {
             state_key,
             state,
             group_key: None,
+            receiver: None,
         });
         Ok(())
     }
@@ -231,6 +322,7 @@ impl ClipFerry {
         }
         dev.state = state;
         dev.group_key = Some(group_key);
+        dev.sync_receiver();
         Ok(())
     }
 
@@ -255,7 +347,7 @@ impl ClipFerry {
         let mut slot = self.device.lock().unwrap();
         let dev = slot.as_mut().ok_or(Error::NotInitialized)?;
         let roster = dev.state.roster.clone().ok_or(Error::NoGroup)?;
-        let group_key = dev.group_key.as_ref().ok_or(Error::NoGroup)?;
+        let group_key = dev.group_key.clone().ok_or(Error::NoGroup)?;
 
         let pending = inviter.pending().ok_or(PairingError::NotPending)?;
         if roster
@@ -277,17 +369,18 @@ impl ClipFerry {
             added_at_ms: now_ms,
             push: None,
         });
-        let welcome = pairing::build_welcome(&dev.keys, &joiner, group_key, &new_roster)?;
+        let welcome = pairing::build_welcome(&dev.keys, &joiner, &group_key, &new_roster)?;
 
         let mut state = dev.state.clone();
         state.roster = Some(new_roster.clone());
         store::write_state(&self.state_path(), &dev.state_key, &state)?;
         dev.state = state;
+        dev.sync_receiver();
 
         // 그룹의 다른 기기들에게 알릴 `RosterUpdate`
         let epoch = new_roster.epoch;
         let ctx = EpochContext::new(
-            group_key,
+            &group_key,
             epoch,
             new_roster
                 .members
@@ -339,6 +432,113 @@ impl ClipFerry {
             return Err(Error::BadGroup);
         }
         self.install_group(dev, joined.group_key, joined.roster)
+    }
+
+    /// 텍스트를 서명·봉인한다. 돌려받은 `bytes`를 `channel_id`에 게시한다.
+    pub fn seal_text(&self, text: &str, now_ms: u64) -> Result<SealedMessage, Error> {
+        if text.is_empty() {
+            return Err(Error::EmptyText);
+        }
+        if text.len() > MAX_TEXT_BYTES {
+            return Err(Error::TextTooLarge);
+        }
+        let slot = self.device.lock().unwrap();
+        let dev = slot.as_ref().ok_or(Error::NotInitialized)?;
+        let ctx = dev.send_context()?;
+        let out = envelope::seal_message(
+            &dev.keys,
+            &ctx,
+            pb::payload_body::Kind::Text(pb::ClipText {
+                text: text.to_string(),
+            }),
+            now_ms,
+        )?;
+        Ok(SealedMessage {
+            channel_id: ctx.channel_id().clone(),
+            msg_id: out.msg_id,
+            bytes: out.bytes,
+        })
+    }
+
+    /// 릴레이에서 받은 페이로드를 검증하고 처리한다.
+    /// 검증에 실패한 메시지는 `Err(이유)`로 돌려주며 이유별 카운터가 올라간다.
+    pub fn handle_deliver(
+        &self,
+        payload: &[u8],
+        source: Source,
+        now_ms: u64,
+    ) -> Result<Incoming, DropReason> {
+        let mut slot = self.device.lock().unwrap();
+        let Some(dev) = slot.as_mut() else {
+            return Ok(Incoming::Nothing);
+        };
+        let Some(receiver) = dev.receiver.as_mut() else {
+            return Ok(Incoming::Nothing);
+        };
+        let got = receiver.receive(payload, source, now_ms)?;
+
+        match got.kind {
+            pb::payload_body::Kind::Text(t) => {
+                let from_name = dev
+                    .state
+                    .roster
+                    .iter()
+                    .flat_map(|r| &r.members)
+                    .find(|m| m.device_id == got.sender.0)
+                    .map(|m| m.name.clone())
+                    .unwrap_or_default();
+                Ok(Incoming::Clip(Clip {
+                    from: got.sender,
+                    from_name,
+                    text: t.text,
+                    created_at_ms: got.created_at_ms,
+                }))
+            }
+            pb::payload_body::Kind::Control(pb::Control {
+                kind: Some(pb::control::Kind::RosterUpdate(update)),
+            }) => {
+                let changed = self.adopt_roster(dev, update.roster);
+                Ok(if changed {
+                    Incoming::DevicesChanged
+                } else {
+                    Incoming::Nothing
+                })
+            }
+            _ => Ok(Incoming::Nothing),
+        }
+    }
+
+    /// 받은 `RosterUpdate`를 채택할지 정한다. 채택하면 저장하고 `true`.
+    fn adopt_roster(&self, dev: &mut Device, new: Option<pb::Roster>) -> bool {
+        let (Some(new), Some(current)) = (new, dev.state.roster.as_ref()) else {
+            return false;
+        };
+        let me = dev.keys.device_id().0;
+        if new.epoch != current.epoch
+            || !roster_is_consistent(&new)
+            // 내가 빠진 로스터는 기기 제거(키 회전)로 다룬다. 여기서는 채택하지 않는다.
+            || !new.members.iter().any(|m| m.device_id == me)
+            || !roster_wins(&new, current)
+        {
+            return false;
+        }
+        let mut state = dev.state.clone();
+        state.roster = Some(new);
+        if store::write_state(&self.state_path(), &dev.state_key, &state).is_err() {
+            return false;
+        }
+        dev.state = state;
+        dev.sync_receiver();
+        true
+    }
+
+    /// 검증에 실패해 버린 메시지 수 (이유별).
+    pub fn drop_counts(&self) -> std::collections::BTreeMap<DropReason, u64> {
+        let slot = self.device.lock().unwrap();
+        slot.as_ref()
+            .and_then(|d| d.receiver.as_ref())
+            .map(|r| r.drop_counts().clone())
+            .unwrap_or_default()
     }
 
     pub fn status(&self) -> Result<Status, Error> {
@@ -406,3 +606,5 @@ fn load_group_key(secrets: &dyn SecretStore, epoch: u64) -> Result<GroupKey, Err
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod text_tests;

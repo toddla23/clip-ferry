@@ -283,7 +283,7 @@ async fn hello_carries_limits() {
         })
         .await;
     let limits = hello.limits.unwrap();
-    assert_eq!(limits.max_frame_bytes, 512 * 1024);
+    assert_eq!(limits.max_frame_bytes, 2 * 1024 * 1024);
     assert_eq!(limits.max_channels_per_conn, 8);
     relay.shutdown().await;
 }

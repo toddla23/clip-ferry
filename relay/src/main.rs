@@ -10,7 +10,7 @@ struct Args {
     #[arg(long, env = "CF_RELAY_LISTEN", default_value = "127.0.0.1:8787")]
     listen: String,
     /// 프레임 최대 바이트
-    #[arg(long, env = "CF_RELAY_MAX_FRAME_BYTES", default_value_t = 512 * 1024)]
+    #[arg(long, env = "CF_RELAY_MAX_FRAME_BYTES", default_value_t = 2 * 1024 * 1024)]
     max_frame_bytes: usize,
     /// 연결당 구독 채널 수
     #[arg(long, env = "CF_RELAY_MAX_CHANNELS", default_value_t = 8)]

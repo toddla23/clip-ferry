@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 
 use prost::Message;
 
-use super::{envelope_aad, signature_input, EpochContext, VERSION};
+use super::{envelope_aad, signature_input, EpochContext, MAX_TEXT_BYTES, VERSION};
 use crate::crypto::{self, DeviceId, NONCE_LEN};
 use crate::pb::{self, payload_body::Kind};
 
@@ -28,6 +28,8 @@ pub enum DropReason {
     Decrypt,
     /// 페이로드·본문 파싱 실패, 필드 길이 오류, 종류 없음
     BadBody,
+    /// 텍스트가 최대 크기를 넘음
+    TooLarge,
     EpochMismatch,
     UnknownSender,
     BadSignature,
@@ -136,6 +138,9 @@ impl Receiver {
             .try_into()
             .map_err(|_| DropReason::BadBody)?;
         let kind = body.kind.ok_or(DropReason::BadBody)?;
+        if matches!(&kind, Kind::Text(t) if t.text.len() > MAX_TEXT_BYTES) {
+            return Err(DropReason::TooLarge);
+        }
         if body.epoch != env.epoch {
             return Err(DropReason::EpochMismatch);
         }
