@@ -1,0 +1,80 @@
+use ed25519_dalek::SigningKey;
+use rand_core::OsRng;
+use sha2::{Digest, Sha256};
+use x25519_dalek::{PublicKey, StaticSecret};
+use zeroize::Zeroizing;
+
+use super::CryptoError;
+
+/// `SHA-256(sign_pub)[0..16]`
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct DeviceId(pub [u8; 16]);
+
+impl DeviceId {
+    pub fn from_sign_pub(sign_pub: &[u8; 32]) -> Self {
+        let digest = Sha256::digest(sign_pub);
+        let mut id = [0u8; 16];
+        id.copy_from_slice(&digest[..16]);
+        Self(id)
+    }
+}
+
+/// 기기 키 쌍: 서명용 Ed25519 + 키 교환용 X25519. 드롭 시 비밀이 지워진다.
+pub struct DeviceKeys {
+    sign: SigningKey,
+    dh: StaticSecret,
+}
+
+impl DeviceKeys {
+    pub fn generate() -> Self {
+        Self {
+            sign: SigningKey::generate(&mut OsRng),
+            dh: StaticSecret::random_from_rng(OsRng),
+        }
+    }
+
+    /// 직렬화 형식: `sign_seed(32) ‖ dh_secret(32)`.
+    pub fn to_bytes(&self) -> Zeroizing<[u8; 64]> {
+        let mut out = Zeroizing::new([0u8; 64]);
+        out[..32].copy_from_slice(&self.sign.to_bytes());
+        out[32..].copy_from_slice(&self.dh.to_bytes());
+        out
+    }
+
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, CryptoError> {
+        let bytes: &[u8; 64] = bytes.try_into().map_err(|_| CryptoError::InvalidLength)?;
+        let mut seed = Zeroizing::new([0u8; 32]);
+        let mut dh = Zeroizing::new([0u8; 32]);
+        seed.copy_from_slice(&bytes[..32]);
+        dh.copy_from_slice(&bytes[32..]);
+        Ok(Self {
+            sign: SigningKey::from_bytes(&seed),
+            dh: StaticSecret::from(*dh),
+        })
+    }
+
+    pub fn sign_public(&self) -> [u8; 32] {
+        self.sign.verifying_key().to_bytes()
+    }
+
+    pub fn dh_public(&self) -> [u8; 32] {
+        PublicKey::from(&self.dh).to_bytes()
+    }
+
+    pub fn device_id(&self) -> DeviceId {
+        DeviceId::from_sign_pub(&self.sign_public())
+    }
+
+    pub(super) fn dh_secret(&self) -> &StaticSecret {
+        &self.dh
+    }
+}
+
+impl std::fmt::Debug for DeviceKeys {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DeviceKeys")
+            .field("device_id", &self.device_id())
+            .field("secrets", &"<redacted>")
+            .finish()
+    }
+}

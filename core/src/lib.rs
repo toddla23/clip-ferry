@@ -1,5 +1,7 @@
 //! clip-ferry 공용 코어.
 
+pub mod crypto;
+
 /// 코어 크레이트 버전.
 pub fn version() -> &'static str {
     env!("CARGO_PKG_VERSION")
