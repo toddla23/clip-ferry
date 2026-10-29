@@ -4,6 +4,7 @@ pub mod api;
 pub mod crypto;
 pub mod envelope;
 pub mod group;
+pub mod pairing;
 pub mod store;
 pub mod transport;
 

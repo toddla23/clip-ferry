@@ -16,6 +16,7 @@ thiserror = "1"
 x25519-dalek = { version = "2", features = ["static_secrets", "zeroize"] }
 zeroize = { version = "1", features = ["derive"] }
 prost = "0.13"
+data-encoding = "2"
 tokio = { workspace = true, features = ["rt", "sync", "time", "macros"] }
 tokio-tungstenite.workspace = true
 futures-util.workspace = true
