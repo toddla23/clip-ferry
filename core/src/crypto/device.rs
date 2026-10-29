@@ -17,6 +17,11 @@ impl DeviceId {
         id.copy_from_slice(&digest[..16]);
         Self(id)
     }
+
+    /// 화면·로그용 짧은 표기: 앞 4바이트 hex.
+    pub fn short_hex(&self) -> String {
+        self.0[..4].iter().map(|b| format!("{b:02x}")).collect()
+    }
 }
 
 /// 서명 검증. 공개키가 잘못됐거나 서명이 맞지 않으면 `Signature` 에러.

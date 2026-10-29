@@ -1,7 +1,10 @@
 //! clip-ferry 공용 코어.
 
+pub mod api;
 pub mod crypto;
 pub mod envelope;
+pub mod group;
+pub mod store;
 pub mod transport;
 
 /// `proto/clip_ferry.proto`에서 생성한 와이어 타입.

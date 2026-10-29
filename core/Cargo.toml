@@ -26,3 +26,4 @@ protox = "0.7"
 
 [dev-dependencies]
 proptest = "1"
+tempfile = "3"

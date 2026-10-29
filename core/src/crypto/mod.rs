@@ -4,6 +4,7 @@
 mod aead;
 mod device;
 mod group;
+mod state_key;
 mod wrap;
 
 #[cfg(test)]
@@ -12,6 +13,7 @@ mod tests;
 pub use aead::{open, seal, Sealed, NONCE_LEN};
 pub use device::{verify_signature, DeviceId, DeviceKeys};
 pub use group::{ChannelId, ContentKey, DeviceTag, GroupKey};
+pub use state_key::StateKey;
 pub use wrap::{unwrap, wrap_for, Wrapped};
 
 /// 암호 연산 실패. 원인을 구분해 알려주지 않는다.

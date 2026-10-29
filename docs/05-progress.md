@@ -11,8 +11,8 @@
 | F01 | 레포 스캐폴딩과 CI | - | 완료 | 로컬 검증 통과(Windows), 세 OS CI 통과, main 머지 |
 | F02 | 코어 암호 기본 | F01 | 완료 | 로컬 검증 통과(Windows), 세 OS CI 통과, main 머지 |
 | F03 | 메시지 포맷과 봉투 | F02 | 완료 | 로컬 검증 통과(Windows), 세 OS CI 통과, main 머지 |
-| F04 | 릴레이 최소판 + 전송 계층 | F03 | 확인대기 | 로컬 검증 통과(Windows). 세 OS CI는 PR 후 확인 필요 |
-| F05 | 그룹 생성과 로컬 상태 | F04 | 대기 | |
+| F04 | 릴레이 최소판 + 전송 계층 | F03 | 완료 | 로컬·터미널 3개 시나리오 확인, 세 OS CI 통과, main 머지 |
+| F05 | 그룹 생성과 로컬 상태 | F04 | 확인대기 | 로컬 검증 통과(Windows). 세 OS CI는 PR 후 확인 필요 |
 | F06 | 페어링 (CLI) | F05 | 대기 | |
 | F07 | 텍스트 송수신 (CLI) | F06 | 대기 | |
 | F08 | 기기 관리 · 키 회전 · 복구 | F07 | 대기 | |
@@ -50,6 +50,8 @@
 새 항목을 위에 추가한다. 형식: `YYYY-MM-DD F00 — 한 줄`
 
 - 2026-10-29 F02 — core/src/crypto 구현(기기 키·그룹 키·HKDF 파생·seal/open·wrap/unwrap), 테스트 20개 통과, 03-protocol 1절 확정, 확인대기
+- 2026-10-29 F05 — core/store·group·api, CLI `--profile`·`init`·`group create`·`status`, 테스트 추가(core 54개), 확인대기
+- 2026-10-29 F04 — 사용자 확인·세 OS CI 통과·main 머지, 완료
 - 2026-10-29 F04 — relay(axum WS, 제한값, 집계 로그), core/transport(자동 재연결·재구독·핑), CLI `debug sub/pub`, 통합 테스트 14개 통과, 확인대기
 - 2026-10-29 F03 — 세 OS CI 통과, main 머지, 완료
 - 2026-10-29 F03 — proto 전체 정의, core/src/envelope(서명·봉인·검증 파이프라인·중복·시간 창), 테스트 42개 통과, 확인대기
