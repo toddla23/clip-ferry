@@ -2,6 +2,7 @@
 
 pub mod crypto;
 pub mod envelope;
+pub mod transport;
 
 /// `proto/clip_ferry.proto`에서 생성한 와이어 타입.
 #[allow(clippy::all)]

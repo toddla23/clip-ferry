@@ -205,7 +205,7 @@ A → 그룹  RosterUpdate (B 추가)
 
 ---
 
-## 5. 릴레이 프로토콜 (초안)
+## 5. 릴레이 프로토콜
 
 - 전송: WebSocket (`wss://`), 서브프로토콜 `clip-ferry.v1`, 바이너리 프레임에 protobuf.
 - 프레임 최대 512 KiB.
@@ -252,6 +252,17 @@ enum ErrorCode { ERROR_UNSPECIFIED = 0; BAD_FRAME = 1; TOO_LARGE = 2; RATE_LIMIT
 - 연결 시 `ServerHello`로 제한값 전달. `Presence`는 구독 직후와 채널 구성 변화 시 전송.
 - 핑: 클라이언트 25초마다 `Ping`, 60초 무응답이면 서버가 연결 종료.
 - 로그: 연결 수, 프레임 수, 바이트 수, 에러 코드 집계만. 채널 ID·태그·페이로드·토큰은 절대 로그 금지.
+
+구현 메모 (`relay/`, `core/src/transport.rs`)
+
+- 서브프로토콜 `clip-ferry.v1`을 협상하지 못한 연결에는 `UNSUPPORTED_VERSION`을 보내고 닫는다.
+- 프레임이 `max_frame_bytes`를 넘으면 `TOO_LARGE`(연결 유지). WebSocket 계층은 한도의 2배를 넘으면 연결을 끊는다.
+- 연결당 속도 제한은 토큰 버킷(초당 프레임 수, 분당 바이트 수). 넘으면 `RATE_LIMITED`(연결 유지).
+- IP당 동시 연결 한도를 넘으면 업그레이드 단계에서 HTTP 429. (리버스 프록시 뒤에서는 프록시 IP로 센다 — F14에서 다룬다.)
+- `Presence`는 구독·구독 해지·연결 종료로 채널 구성이 바뀔 때마다 그 채널의 모든 구독자에게 간다.
+- `push`는 F20 전까지 무시되고 `Ack.pushed`는 항상 0.
+- 클라이언트 재연결 백오프는 1s에서 시작해 두 배씩 늘어 최대 60s. 끊긴 동안의 `Publish`는 쌓지 않고 `PublishFailed`로 알린다.
+- `wss://`(TLS) 클라이언트는 F14에서 추가한다. 지금은 `ws://`만 연결된다.
 
 ---
 

@@ -8,4 +8,14 @@ rust-version.workspace = true
 
 [dependencies]
 anyhow.workspace = true
+axum = { version = "0.7", features = ["ws"] }
 clap.workspace = true
+clip-ferry-core = { path = "../core" }
+futures-util = { workspace = true, features = ["sink"] }
+prost = "0.13"
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "sync", "time", "signal"] }
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[dev-dependencies]
+tokio-tungstenite.workspace = true
