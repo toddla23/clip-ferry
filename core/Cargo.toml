@@ -1,0 +1,9 @@
+[package]
+name = "clip-ferry-core"
+description = "clip-ferry 공용 코어: 암호화, 프로토콜, 연결"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
