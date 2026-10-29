@@ -164,7 +164,7 @@ message ResendRequest { bytes msg_id = 1; }
 
 ---
 
-## 4. 페어링 (초안)
+## 4. 페어링
 
 ### 4.1 초대
 
@@ -178,7 +178,9 @@ message ResendRequest { bytes msg_id = 1; }
 표현 형식:
 
 - QR: `clipferry://pair/1/<base64url(invite_secret)>[?relay=<url-encoded wss URL>]`
-- 텍스트 코드: Crockford base32로 52자, 4자씩 `-`로 묶음. 입력 시 대소문자·하이픈·공백 무시, `O→0`, `I/L→1` 보정. (짧은 코드는 열린 질문 O-02)
+- 텍스트 코드: 비밀 256비트를 Crockford base32 52자(마지막 4비트는 0 채움)로 쓰고 **체크 기호 1자**를 붙여 총 53자, 4자씩 `-`로 묶음. 입력 시 대소문자·하이픈·공백 무시, `O→0`, `I/L→1` 보정. (짧은 코드는 열린 질문 O-02)
+  - 체크 기호: 52자를 32진수로 읽은 값을 37로 나눈 나머지를 Crockford 체크 기호 37개(`0-9A-Z`에서 `I L O U` 제외 + `* ~ $ = U`)로 쓴다. 한 글자 오타와 인접한 두 글자 바꿈을 모두 잡는다.
+  - 채움 비트가 0이 아니면 거부한다.
 
 ### 4.2 흐름
 
@@ -188,15 +190,19 @@ message ResendRequest { bytes msg_id = 1; }
 B → A  PairHello   { sign_pub_B, dh_pub_B, name_B }
 A → B  PairOffer   { sign_pub_A, dh_pub_A, name_A }
        양쪽 화면에 SAS 표시:
-       SAS = u32(SHA-256("clip-ferry v1 sas" ‖ invite_secret ‖ sign_pub_A ‖ sign_pub_B)[0..4]) mod 1_000_000  (6자리, 앞자리 0 유지)
+       SAS = u32_le(SHA-256("clip-ferry v1 sas" ‖ invite_secret ‖ sign_pub_A ‖ sign_pub_B)[0..4]) mod 1_000_000  (6자리, 앞자리 0 유지)
        사용자가 A에서 "같음, 승인" 선택
 A → B  PairWelcome { wrap_for(B, group_key ‖ epoch ‖ 직렬화된 roster(B 포함)) }  + 서명(A)
 A → 그룹  RosterUpdate (B 추가)
 ```
 
 - 와이어 형식은 `PairEnvelope{nonce, ct}`(ct = `PairMessage` 봉인) 안에 `PairHello` / `PairOffer` / `PairWelcome` / `PairReject`. `PairWelcome.signature = Ed25519(A, "clip-ferry v1 welcome" ‖ eph_pub ‖ nonce ‖ ct)`.
-- 같은 초대로 두 번째 `PairHello`가 오면 초대를 무효화하고 A에 경고를 띄운다.
-- 사용자가 거절하거나 10분이 지나면 `PairReject` 전송 후 `pair_channel` 구독 해제.
+- `PairHello`는 응답(`PairOffer`)이 올 때까지 B가 여러 번 보낸다(A가 아직 구독하기 전일 수 있다). A는 **같은 기기**(같은 `sign_pub`·`dh_pub`)의 재전송에는 같은 `PairOffer`를 다시 보내고, 승인 대기 상태를 바꾸지 않는다.
+- B는 `PairOffer`를 받기 전에 온 `PairWelcome`을 무시하고, 환영 메시지는 `PairOffer`의 `sign_pub`으로 서명을 검증한다. 이어서 에포크 일치, 내가 로스터에 있음, 초대한 기기가 로스터에 있음을 확인한다.
+- 같은 초대로 다른 기기의 `PairHello`가 오면 초대를 무효화하고 A에 경고를 띄운다.
+- 사용자가 거절하거나 10분이 지나면 `PairReject` 전송 후 `pair_channel` 구독 해제. 승인 후에는 초대가 "사용됨"이 되어 이후 `PairHello`는 `AlreadyUsed`로 무효 처리한다.
+- 승인 시점에 A의 로스터에 B가 들어가고 `version`이 1 오른다. `PairWelcome`이 B에게 닿지 못해도 로스터에는 남으므로 그때는 기기 제거(F08)로 정리한다.
+- 다른 구성원이 `RosterUpdate`를 받아 채택하는 쪽은 F08에서 구현한다. F06은 보내는 쪽까지만.
 - `PairWelcome`이 B의 공개키로 래핑되므로, 초대 코드를 엿본 제3자도 (SAS 승인이 없으면) 그룹 키를 얻지 못한다.
 
 ### 4.3 그룹 생성

@@ -26,3 +26,8 @@ pub enum CryptoError {
     #[error("서명 검증 실패")]
     Signature,
 }
+
+/// HKDF-SHA256(salt 없음)으로 32바이트를 파생한다.
+pub fn derive32(ikm: &[u8], info: &[u8]) -> [u8; 32] {
+    group::hkdf_expand(ikm, None, info)
+}

@@ -1,4 +1,5 @@
 mod file_store;
+mod pair;
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -26,13 +27,8 @@ struct Args {
     )]
     profiles_dir: PathBuf,
     /// 릴레이 주소
-    #[arg(
-        long,
-        env = "CF_RELAY",
-        default_value = "ws://127.0.0.1:8787",
-        global = true
-    )]
-    relay: String,
+    #[arg(long, env = "CF_RELAY", global = true)]
+    relay: Option<String>,
     #[command(subcommand)]
     command: Option<Command>,
 }
@@ -52,6 +48,13 @@ enum Command {
     },
     /// 기기 이름, 에포크, 구성원 수, 릴레이 연결 상태를 보여 준다
     Status,
+    /// 새 기기를 초대한다: 코드와 QR을 보여 주고 참여 요청을 기다린다
+    Invite,
+    /// 초대 코드(또는 링크)로 그룹에 참여한다
+    Join {
+        /// `invite`가 보여 준 텍스트 코드 또는 링크
+        code: String,
+    },
     /// 암호화 없이 릴레이만 시험한다 (원시 바이트)
     Debug {
         #[command(subcommand)]
@@ -98,8 +101,18 @@ fn parse_channel(hex: &str) -> anyhow::Result<[u8; 32]> {
     Ok(channel)
 }
 
+impl Args {
+    fn relay_url(&self) -> String {
+        self.relay
+            .clone()
+            .unwrap_or_else(|| DEFAULT_RELAY.to_string())
+    }
+}
+
+const DEFAULT_RELAY: &str = "ws://127.0.0.1:8787";
+
 /// 시험용 임의 태그 (`GroupKey` 난수 생성기를 재사용).
-fn random_tag() -> [u8; 16] {
+pub(crate) fn random_tag() -> [u8; 16] {
     let mut tag = [0u8; 16];
     tag.copy_from_slice(&GroupKey::generate().as_bytes()[..16]);
     tag
@@ -158,16 +171,28 @@ async fn main() -> anyhow::Result<()> {
             let app = open_profile(&args)?;
             let status = app.status()?;
             let relay = match app.connection() {
-                Some(conn) => relay_state(&args.relay, conn.channel_id.0, conn.device_tag.0).await,
+                Some(conn) => {
+                    relay_state(&args.relay_url(), conn.channel_id.0, conn.device_tag.0).await
+                }
                 None => "연결 안 함 (그룹 없음)",
             };
             print!("{}", render_status(&status, relay));
             Ok(())
         }
+        Some(Command::Invite) => {
+            let app = open_profile(&args)?;
+            pair::invite(&app, args.relay_url()).await
+        }
+        Some(Command::Join { code }) => {
+            let app = open_profile(&args)?;
+            pair::join(&app, code, args.relay.clone(), DEFAULT_RELAY).await
+        }
         Some(Command::Debug { action }) => match action {
-            DebugAction::Sub { channel } => debug_sub(&args.relay, parse_channel(channel)?).await,
+            DebugAction::Sub { channel } => {
+                debug_sub(&args.relay_url(), parse_channel(channel)?).await
+            }
             DebugAction::Pub { channel, message } => {
-                debug_pub(&args.relay, parse_channel(channel)?, message.clone()).await
+                debug_pub(&args.relay_url(), parse_channel(channel)?, message.clone()).await
             }
         },
     }
