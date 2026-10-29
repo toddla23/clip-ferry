@@ -10,7 +10,7 @@ mod wrap;
 mod tests;
 
 pub use aead::{open, seal, Sealed, NONCE_LEN};
-pub use device::{DeviceId, DeviceKeys};
+pub use device::{verify_signature, DeviceId, DeviceKeys};
 pub use group::{ChannelId, ContentKey, DeviceTag, GroupKey};
 pub use wrap::{unwrap, wrap_for, Wrapped};
 
@@ -21,4 +21,6 @@ pub enum CryptoError {
     Decrypt,
     #[error("입력 길이가 올바르지 않음")]
     InvalidLength,
+    #[error("서명 검증 실패")]
+    Signature,
 }
