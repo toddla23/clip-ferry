@@ -6,7 +6,12 @@ edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 
+[[bin]]
+name = "cf"
+path = "src/main.rs"
+
 [dependencies]
 anyhow.workspace = true
 clap.workspace = true
 clip-ferry-core = { path = "../../core" }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "signal"] }
