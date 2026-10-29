@@ -265,4 +265,14 @@ message LocalState {
   string device_name = 2;
   Roster roster = 3;        // 그룹이 없으면 비어 있음. roster.epoch가 현재 에포크
   uint64 created_at_ms = 4;
+  repeated RetiredEpoch retired = 5;  // 유예 중인 이전 에포크 (최신 순). 키는 비밀 저장소에 있다
+  uint64 last_contact_ms = 6;         // 현재 에포크에서 다른 구성원의 유효한 메시지를 마지막으로 받은 시각
+  uint32 status = 7;                  // 0 정상, 1 그룹에서 제거됨
+}
+
+// 키 회전 뒤에도 30일 동안 보관하는 이전 에포크.
+message RetiredEpoch {
+  uint64 epoch = 1;
+  uint64 retired_at_ms = 2;
+  Roster roster = 3;  // 그 에포크의 로스터 (옛 메시지의 서명 검증용)
 }

@@ -4,15 +4,15 @@ use super::*;
 use crate::pairing::{InviterEvent, JoinerEvent};
 use crate::store::MemorySecretStore;
 
-const T0: u64 = 1_700_000_000_000;
+pub(super) const T0: u64 = 1_700_000_000_000;
 
-struct Profile {
-    app: ClipFerry,
-    dir: tempfile::TempDir,
-    secrets: MemorySecretStore,
+pub(super) struct Profile {
+    pub(super) app: ClipFerry,
+    pub(super) dir: tempfile::TempDir,
+    pub(super) secrets: MemorySecretStore,
 }
 
-fn profile(name: &str, group: bool) -> Profile {
+pub(super) fn profile(name: &str, group: bool) -> Profile {
     let dir = tempfile::tempdir().unwrap();
     let secrets = MemorySecretStore::default();
     let app = open(dir.path(), &secrets);
@@ -23,7 +23,7 @@ fn profile(name: &str, group: bool) -> Profile {
     Profile { app, dir, secrets }
 }
 
-fn open(dir: &std::path::Path, secrets: &MemorySecretStore) -> ClipFerry {
+pub(super) fn open(dir: &std::path::Path, secrets: &MemorySecretStore) -> ClipFerry {
     ClipFerry::open(
         Config {
             data_dir: dir.to_path_buf(),
@@ -34,7 +34,7 @@ fn open(dir: &std::path::Path, secrets: &MemorySecretStore) -> ClipFerry {
 }
 
 /// `joiner`를 `inviter`의 그룹에 넣고, 기존 구성원에게 갈 `RosterUpdate`를 돌려준다.
-fn pair(inviter: &Profile, joiner: &Profile) -> Vec<u8> {
+pub(super) fn pair(inviter: &Profile, joiner: &Profile) -> Vec<u8> {
     let mut inv = inviter.app.create_invite(None).unwrap();
     let mut j = joiner.app.join(inv.invite().clone()).unwrap();
     let InviterEvent::Offer { payload, .. } = inv.handle(&j.hello(), T0) else {
@@ -49,7 +49,7 @@ fn pair(inviter: &Profile, joiner: &Profile) -> Vec<u8> {
     approval.roster_update
 }
 
-fn clip(incoming: Result<Incoming, DropReason>) -> Clip {
+pub(super) fn clip(incoming: Result<Incoming, DropReason>) -> Clip {
     match incoming {
         Ok(Incoming::Clip(c)) => c,
         other => panic!("텍스트가 아님: {other:?}"),

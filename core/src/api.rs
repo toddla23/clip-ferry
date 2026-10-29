@@ -1,5 +1,6 @@
 //! 셸이 쓰는 공개 API.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -50,6 +51,16 @@ pub enum Error {
     Envelope(#[from] EnvelopeError),
     #[error("받은 그룹 정보가 이 기기와 맞지 않습니다")]
     BadGroup,
+    #[error("removed or stale: 이 기기는 그룹에서 제거되었습니다. 다시 페어링하세요")]
+    Removed,
+    #[error("기기 이름은 1~64바이트여야 합니다")]
+    BadName,
+    #[error("그런 기기가 없습니다")]
+    UnknownDevice,
+    #[error("이름이나 id 앞자리가 여러 기기와 겹칩니다. 더 길게 쓰세요")]
+    AmbiguousDevice,
+    #[error("자기 자신은 제거할 수 없습니다")]
+    CannotRemoveSelf,
     #[error("보낼 텍스트가 비어 있습니다")]
     EmptyText,
     #[error("텍스트가 너무 큽니다 (최대 1 MiB)")]
@@ -87,6 +98,25 @@ pub struct Status {
     /// 그룹이 있을 때만.
     pub epoch: Option<u64>,
     pub member_count: usize,
+    pub health: GroupHealth,
+}
+
+/// 그룹과의 관계.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GroupHealth {
+    Active,
+    /// 그룹에서 제거되었다. 다시 페어링해야 한다.
+    Removed,
+    /// 30일 넘게 다른 기기와 연락이 없다. 제거되었거나 너무 오래 연결되지 않은 것이다.
+    Stale,
+}
+
+/// 구독해야 하는 채널 하나 (현재 에포크와 유예 중인 이전 에포크).
+#[derive(Debug, Clone)]
+pub struct Subscription {
+    pub epoch: u64,
+    pub channel_id: ChannelId,
+    pub device_tag: DeviceTag,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -110,7 +140,7 @@ pub struct Approval {
 }
 
 /// 봉인된 메시지. `bytes`를 `channel_id` 채널에 게시한다.
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SealedMessage {
     pub channel_id: ChannelId,
     pub msg_id: [u8; 16],
@@ -140,6 +170,12 @@ pub enum Incoming {
     Clip(Clip),
     /// 로스터가 바뀌었다 (기기 목록을 다시 그린다).
     DevicesChanged,
+    /// 키가 회전되어 새 에포크로 넘어갔다 (새 채널을 구독해야 한다).
+    EpochChanged(u64),
+    /// 이 기기가 그룹에서 제거된 것을 알았다.
+    Removed,
+    /// 돌아온 기기의 `EpochQuery`에 대한 응답. 각 메시지를 해당 채널에 게시한다.
+    Replies(Vec<SealedMessage>),
     /// 처리할 것이 없는 메시지 (아직 다루지 않는 종류 등).
     Nothing,
 }
@@ -149,7 +185,13 @@ struct Device {
     state_key: StateKey,
     state: pb::LocalState,
     group_key: Option<GroupKey>,
+    /// 유예 중인 이전 에포크의 그룹 키 (`state.retired`와 짝)
+    retired_keys: HashMap<u64, GroupKey>,
     receiver: Option<Receiver>,
+    last_contact_ms: u64,
+    /// `state.bin`에 마지막으로 적은 `last_contact_ms`
+    persisted_contact_ms: u64,
+    removed: bool,
 }
 
 impl Device {
@@ -158,11 +200,23 @@ impl Device {
         let (Some(group_key), Some(roster)) = (&self.group_key, &self.state.roster) else {
             return;
         };
-        let ctx = EpochContext::new(group_key, roster.epoch, roster_sign_pubs(roster));
+        let mut contexts = vec![EpochContext::new(
+            group_key,
+            roster.epoch,
+            roster_sign_pubs(roster),
+        )];
+        for retired in &self.state.retired {
+            if let (Some(key), Some(old)) = (self.retired_keys.get(&retired.epoch), &retired.roster)
+            {
+                contexts.push(EpochContext::new(key, retired.epoch, roster_sign_pubs(old)));
+            }
+        }
         let receiver = self
             .receiver
             .get_or_insert_with(|| Receiver::new(self.keys.device_id()));
-        receiver.add_epoch(ctx);
+        for ctx in contexts {
+            receiver.add_epoch(ctx);
+        }
     }
 
     fn send_context(&self) -> Result<EpochContext, Error> {
@@ -235,12 +289,25 @@ impl ClipFerry {
                     Some(roster) => Some(load_group_key(secrets.as_ref(), roster.epoch)?),
                     None => None,
                 };
+                let mut retired_keys = HashMap::new();
+                for r in &state.retired {
+                    if let Ok(key) = load_group_key(secrets.as_ref(), r.epoch) {
+                        retired_keys.insert(r.epoch, key);
+                    }
+                }
+                let persisted = state.last_contact_ms;
+                let removed = state.status == 1;
                 let mut dev = Device {
                     keys,
                     state_key,
                     state,
                     group_key,
+                    retired_keys,
                     receiver: None,
+                    // 예전 버전 상태 파일에는 값이 없다. 지금부터 센다.
+                    last_contact_ms: if persisted == 0 { now_ms() } else { persisted },
+                    persisted_contact_ms: persisted,
+                    removed,
                 };
                 dev.sync_receiver();
                 Some(dev)
@@ -272,6 +339,9 @@ impl ClipFerry {
             device_name: device_name.to_string(),
             roster: None,
             created_at_ms: now_ms(),
+            retired: Vec::new(),
+            last_contact_ms: 0,
+            status: 0,
         };
 
         self.secrets.set(KEY_DEVICE, &keys.to_bytes()[..])?;
@@ -287,7 +357,11 @@ impl ClipFerry {
             state_key,
             state,
             group_key: None,
+            retired_keys: HashMap::new(),
             receiver: None,
+            last_contact_ms: now_ms(),
+            persisted_contact_ms: 0,
+            removed: false,
         });
         Ok(())
     }
@@ -313,6 +387,8 @@ impl ClipFerry {
         let mut state = dev.state.clone();
         let epoch = roster.epoch;
         state.roster = Some(roster);
+        state.last_contact_ms = now_ms();
+        state.status = 0;
 
         self.secrets
             .set(&group_key_name(epoch), group_key.as_bytes())?;
@@ -320,6 +396,9 @@ impl ClipFerry {
             let _ = self.secrets.delete(&group_key_name(epoch));
             return Err(e.into());
         }
+        dev.last_contact_ms = state.last_contact_ms;
+        dev.persisted_contact_ms = state.last_contact_ms;
+        dev.removed = false;
         dev.state = state;
         dev.group_key = Some(group_key);
         dev.sync_receiver();
@@ -444,6 +523,9 @@ impl ClipFerry {
         }
         let slot = self.device.lock().unwrap();
         let dev = slot.as_ref().ok_or(Error::NotInitialized)?;
+        if dev.removed {
+            return Err(Error::Removed);
+        }
         let ctx = dev.send_context()?;
         let out = envelope::seal_message(
             &dev.keys,
@@ -468,17 +550,49 @@ impl ClipFerry {
         source: Source,
         now_ms: u64,
     ) -> Result<Incoming, DropReason> {
+        use pb::control::Kind as C;
+        use pb::payload_body::Kind;
+
         let mut slot = self.device.lock().unwrap();
         let Some(dev) = slot.as_mut() else {
             return Ok(Incoming::Nothing);
         };
+        if dev.removed {
+            return Ok(Incoming::Nothing);
+        }
         let Some(receiver) = dev.receiver.as_mut() else {
             return Ok(Incoming::Nothing);
         };
         let got = receiver.receive(payload, source, now_ms)?;
 
+        let current_epoch = dev.state.roster.as_ref().map_or(0, |r| r.epoch);
+        let sender_in_current = dev
+            .state
+            .roster
+            .iter()
+            .flat_map(|r| &r.members)
+            .any(|m| m.device_id == got.sender.0);
+        let is_query = matches!(
+            &got.kind,
+            Kind::Control(pb::Control {
+                kind: Some(C::EpochQuery(_))
+            })
+        );
+
+        // 이전 에포크로 온 메시지는 지금도 그룹에 있는 기기가 보낸 것만 받는다.
+        // 제거된 기기가 옛 키로 계속 보내는 것을 막는다. 단, 돌아온 기기의 `EpochQuery`는 응답해야 한다.
+        if got.epoch < current_epoch && !sender_in_current && !is_query {
+            if let Some(receiver) = dev.receiver.as_mut() {
+                receiver.count_drop(DropReason::SenderRemoved);
+            }
+            return Err(DropReason::SenderRemoved);
+        }
+        if got.epoch == current_epoch {
+            self.touch(dev, now_ms);
+        }
+
         match got.kind {
-            pb::payload_body::Kind::Text(t) => {
+            Kind::Text(t) => {
                 let from_name = dev
                     .state
                     .roster
@@ -494,9 +608,12 @@ impl ClipFerry {
                     created_at_ms: got.created_at_ms,
                 }))
             }
-            pb::payload_body::Kind::Control(pb::Control {
-                kind: Some(pb::control::Kind::RosterUpdate(update)),
+            Kind::Control(pb::Control {
+                kind: Some(C::RosterUpdate(update)),
             }) => {
+                if got.epoch != current_epoch {
+                    return Ok(Incoming::Nothing);
+                }
                 let changed = self.adopt_roster(dev, update.roster);
                 Ok(if changed {
                     Incoming::DevicesChanged
@@ -504,6 +621,12 @@ impl ClipFerry {
                     Incoming::Nothing
                 })
             }
+            Kind::Control(pb::Control {
+                kind: Some(C::Rekey(rekey)),
+            }) => Ok(self.handle_rekey(dev, got.sender, got.epoch, rekey, now_ms)),
+            Kind::Control(pb::Control {
+                kind: Some(C::EpochQuery(_)),
+            }) => Ok(self.handle_query(dev, got.sender, got.epoch, now_ms)),
             _ => Ok(Incoming::Nothing),
         }
     }
@@ -549,6 +672,7 @@ impl ClipFerry {
             device_id: dev.keys.device_id(),
             epoch: dev.state.roster.as_ref().map(|r| r.epoch),
             member_count: dev.state.roster.as_ref().map_or(0, |r| r.members.len()),
+            health: dev.health(now_ms()),
         })
     }
 
@@ -578,6 +702,9 @@ impl ClipFerry {
     pub fn connection(&self) -> Option<Connection> {
         let slot = self.device.lock().unwrap();
         let dev = slot.as_ref()?;
+        if dev.removed {
+            return None;
+        }
         let epoch = dev.state.roster.as_ref()?.epoch;
         let group_key = dev.group_key.as_ref()?;
         Some(Connection {
@@ -604,6 +731,9 @@ fn load_group_key(secrets: &dyn SecretStore, epoch: u64) -> Result<GroupKey, Err
     Ok(GroupKey::from_bytes(key))
 }
 
+mod epochs;
+#[cfg(test)]
+mod group_tests;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]

@@ -14,8 +14,8 @@
 | F04 | 릴레이 최소판 + 전송 계층 | F03 | 완료 | 로컬·터미널 3개 시나리오 확인, 세 OS CI 통과, main 머지 |
 | F05 | 그룹 생성과 로컬 상태 | F04 | 완료 | 로컬·터미널 시나리오 확인, 세 OS CI 통과, main 머지 |
 | F06 | 페어링 (CLI) | F05 | 완료 | 로컬·터미널 시나리오 확인, 세 OS CI 통과, main 머지 |
-| F07 | 텍스트 송수신 (CLI) | F06 | 확인대기 | 로컬 검증 통과(Windows). 세 OS CI는 PR 후 확인 필요 |
-| F08 | 기기 관리 · 키 회전 · 복구 | F07 | 대기 | |
+| F07 | 텍스트 송수신 (CLI) | F06 | 완료 | 로컬·터미널 시나리오 확인, 세 OS CI 통과, main 머지 |
+| F08 | 기기 관리 · 키 회전 · 복구 | F07 | 확인대기 | 로컬 검증 통과(Windows). 세 OS CI는 PR 후 확인 필요 |
 | **M2** | **데스크톱** | | | |
 | F09 | 데스크톱 셸 기본 | F08 | 대기 | |
 | F10 | 데스크톱 페어링 UI | F09 | 대기 | |
@@ -50,6 +50,8 @@
 새 항목을 위에 추가한다. 형식: `YYYY-MM-DD F00 — 한 줄`
 
 - 2026-10-29 F02 — core/src/crypto 구현(기기 키·그룹 키·HKDF 파생·seal/open·wrap/unwrap), 테스트 20개 통과, 03-protocol 1절 확정, 확인대기
+- 2026-10-29 F08 — 기기 이름 변경·제거, 키 회전(Rekey), 이전 에포크 30일 유예, EpochQuery·먼저 밀어 주기, 제거/stale 상태, CLI `devices`·`rename`·`remove`, 테스트 추가(core 118개, 릴레이 통합 4개), 확인대기
+- 2026-10-29 F07 — 사용자 확인·세 OS CI 통과·main 머지, 완료
 - 2026-10-29 F07 — core/session(`EventSink`, `send_text`), api `seal_text`/`handle_deliver`/`RosterUpdate` 채택, 텍스트 1 MiB 제한, 릴레이 프레임 2 MiB(D-012), CLI `send`·`listen`, 통합 테스트 5개 추가, 확인대기
 - 2026-10-29 F06 — 사용자 확인·세 OS CI 통과·main 머지, 완료
 - 2026-10-29 F06 — core/pairing(초대 코드·QR, SAS, 환영 메시지, 초대자/참여자 상태 기계), api create_invite/approve_join/join/accept_join, CLI `invite`·`join`, 테스트 추가(core 88개), 확인대기
