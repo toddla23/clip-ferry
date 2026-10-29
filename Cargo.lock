@@ -351,6 +351,7 @@ dependencies = [
  "anyhow",
  "clap",
  "clip-ferry-core",
+ "tempfile",
  "tokio",
 ]
 
@@ -368,6 +369,7 @@ dependencies = [
  "protox",
  "rand_core 0.6.4",
  "sha2",
+ "tempfile",
  "thiserror",
  "tokio",
  "tokio-tungstenite",

@@ -15,3 +15,6 @@ anyhow.workspace = true
 clap.workspace = true
 clip-ferry-core = { path = "../../core" }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "signal"] }
+
+[dev-dependencies]
+tempfile = "3"

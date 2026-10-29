@@ -40,14 +40,17 @@
 pub struct ClipFerry { /* ... */ }
 
 impl ClipFerry {
-    pub fn open(config: Config, secrets: Box<dyn SecretStore>, events: Box<dyn EventSink>) -> Result<Self>;
-    pub fn create_group(&self, device_name: String) -> Result<()>;
+    pub fn open(config: Config, secrets: Box<dyn SecretStore>) -> Result<Self>;   // EventSink는 이벤트가 생기는 기능에서 추가
+    pub fn init_device(&self, device_name: &str) -> Result<()>;   // 기기 키·로컬 저장 키 생성 (F05)
+    pub fn create_group(&self) -> Result<()>;                    // 에포크 1, 구성원은 이 기기뿐 (F05)
+    pub fn status(&self) -> Result<Status>;                      // 이름·device_id·에포크·구성원 수 (F05)
+    pub fn connection(&self) -> Option<Connection>;              // 릴레이 접속용 채널 ID·태그 (F05)
     pub fn create_invite(&self) -> Result<Invite>;            // QR 문자열 + 텍스트 코드
     pub fn join(&self, code: String, device_name: String) -> Result<()>;
     pub fn approve_pairing(&self, request_id: String, approve: bool) -> Result<()>;
     pub fn send_text(&self, text: String) -> Result<()>;
     pub fn send_image(&self, mime: String, bytes: Vec<u8>) -> Result<()>;
-    pub fn devices(&self) -> Vec<DeviceInfo>;
+    pub fn devices(&self) -> Vec<DeviceInfo>;                    // F05
     pub fn remove_device(&self, device_id: String) -> Result<()>;
     pub fn set_push_token(&self, platform: PushPlatform, token: String) -> Result<()>;
     pub fn handle_push_payload(&self, payload: Vec<u8>) -> Result<Option<Clip>>; // iOS NSE·Android FCM용
@@ -149,6 +152,9 @@ clip-ferry/
 - **비밀**(기기 개인키, 현재·이전 에포크 그룹 키, 로컬 저장 키): 플랫폼 보안 저장소 (`SecretStore`)
   - Windows: Credential Manager (`keyring`) / macOS·iOS: Keychain / Android: Keystore로 감싼 EncryptedSharedPreferences
 - **상태**(로스터, 설정, 에포크 번호): 앱 데이터 폴더의 `state.bin`. 로컬 저장 키로 XChaCha20-Poly1305 암호화.
+  - 형식: `"CFST"`(4) ‖ 형식 버전(1) ‖ nonce(24) ‖ 암호문. 머리말(`"CFST"`‖버전)이 aad. 평문은 `LocalState` protobuf.
+  - 비밀 저장소 키 이름: `device_keys`(서명 시드‖DH 비밀, 64B), `state_key`(32B), `group_key/<에포크>`(32B).
+  - 비밀 저장소와 `state.bin`이 한쪽만 남아 있으면 열기를 거부한다(조용히 새로 만들지 않는다).
 - **클립보드 내용은 디스크에 저장하지 않는다** (로컬 내역 기능 F29 전까지).
 
 ## 민감 클립보드 제외 (F11)
