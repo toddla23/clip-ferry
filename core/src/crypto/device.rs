@@ -1,4 +1,4 @@
-use ed25519_dalek::SigningKey;
+use ed25519_dalek::{Signer, SigningKey, VerifyingKey};
 use rand_core::OsRng;
 use sha2::{Digest, Sha256};
 use x25519_dalek::{PublicKey, StaticSecret};
@@ -17,6 +17,14 @@ impl DeviceId {
         id.copy_from_slice(&digest[..16]);
         Self(id)
     }
+}
+
+/// 서명 검증. 공개키가 잘못됐거나 서명이 맞지 않으면 `Signature` 에러.
+pub fn verify_signature(sign_pub: &[u8; 32], msg: &[u8], sig: &[u8]) -> Result<(), CryptoError> {
+    let key = VerifyingKey::from_bytes(sign_pub).map_err(|_| CryptoError::Signature)?;
+    let sig: &[u8; 64] = sig.try_into().map_err(|_| CryptoError::Signature)?;
+    key.verify_strict(msg, &ed25519_dalek::Signature::from_bytes(sig))
+        .map_err(|_| CryptoError::Signature)
 }
 
 /// 기기 키 쌍: 서명용 Ed25519 + 키 교환용 X25519. 드롭 시 비밀이 지워진다.
@@ -59,6 +67,11 @@ impl DeviceKeys {
 
     pub fn dh_public(&self) -> [u8; 32] {
         PublicKey::from(&self.dh).to_bytes()
+    }
+
+    /// Ed25519 서명 (64바이트).
+    pub fn sign(&self, msg: &[u8]) -> [u8; 64] {
+        self.sign.sign(msg).to_bytes()
     }
 
     pub fn device_id(&self) -> DeviceId {

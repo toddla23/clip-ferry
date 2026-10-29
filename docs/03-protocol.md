@@ -1,7 +1,7 @@
 # 03. 프로토콜
 
 > 이 문서의 `(초안)` 표시는 아직 구현으로 확정되지 않은 부분이다. 해당 기능을 구현하면서 확정하고 표시를 지운다.
-> 와이어 포맷의 원본은 `proto/clip_ferry.proto`이며(F03에서 생성), 이 문서와 항상 일치해야 한다.
+> 와이어 포맷의 원본은 `proto/clip_ferry.proto`이며, 이 문서와 항상 일치해야 한다.
 
 모든 다중 바이트 정수는 little-endian. `||`는 바이트 이어붙이기. HKDF는 HKDF-SHA256, salt 없음(명시한 경우 제외).
 
@@ -49,7 +49,7 @@ Wrapped { eph_pub, nonce, ct }
 
 ---
 
-## 2. 봉투 (Envelope) (초안)
+## 2. 봉투 (Envelope)
 
 ### 2.1 구조
 
@@ -98,6 +98,13 @@ message ImageChunk { bytes transfer_id = 1; uint32 index = 2; bytes data = 3; }
 6. `msg_id`가 최근 4096개 중복 목록에 없음
 7. `created_at_ms`가 현재 시각 ±10분 이내 (푸시 경로는 과거 1시간까지 허용)
 8. 자기 자신이 보낸 메시지면 버림
+
+구현 메모 (`core/src/envelope`)
+
+- `sender_device_id`·`msg_id`가 16바이트가 아니거나 `kind`가 없으면 3단계에서 버린다.
+- 서명은 복호화한 `SignedPayload.body`의 원본 바이트에 대해 검증한다(다시 직렬화하지 않는다).
+- `msg_id`는 모든 검사를 통과한 메시지만 중복 목록에 넣는다.
+- 버린 이유는 이유별 카운터로만 남긴다.
 
 ### 2.3 이미지 전송
 
@@ -187,6 +194,7 @@ A → B  PairWelcome { wrap_for(B, group_key ‖ epoch ‖ 직렬화된 roster(B
 A → 그룹  RosterUpdate (B 추가)
 ```
 
+- 와이어 형식은 `PairEnvelope{nonce, ct}`(ct = `PairMessage` 봉인) 안에 `PairHello` / `PairOffer` / `PairWelcome` / `PairReject`. `PairWelcome.signature = Ed25519(A, "clip-ferry v1 welcome" ‖ eph_pub ‖ nonce ‖ ct)`.
 - 같은 초대로 두 번째 `PairHello`가 오면 초대를 무효화하고 A에 경고를 띄운다.
 - 사용자가 거절하거나 10분이 지나면 `PairReject` 전송 후 `pair_channel` 구독 해제.
 - `PairWelcome`이 B의 공개키로 래핑되므로, 초대 코드를 엿본 제3자도 (SAS 승인이 없으면) 그룹 키를 얻지 못한다.

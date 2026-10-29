@@ -1,0 +1,256 @@
+// clip-ferry 와이어 포맷의 원본. docs/03-protocol.md와 항상 일치해야 한다.
+syntax = "proto3";
+
+package clip_ferry.v1;
+
+// ---------------------------------------------------------------------------
+// 2. 봉투
+// ---------------------------------------------------------------------------
+
+// 릴레이에게 보이는 부분 (Publish.payload 바이트).
+// aad = "clip-ferry/v1" || channel_id || epoch(u64 LE)
+message SealedEnvelope {
+  uint32 version = 1;     // 현재 1
+  uint64 epoch = 2;
+  bytes nonce = 3;        // 24바이트, 매번 무작위
+  bytes ciphertext = 4;   // XChaCha20-Poly1305(content_key, nonce, SignedPayload, aad)
+}
+
+// 복호화 후.
+message SignedPayload {
+  bytes body = 1;         // 직렬화된 PayloadBody
+  bytes signature = 2;    // Ed25519(sender sign_key, "clip-ferry v1 sig" || body)
+}
+
+message PayloadBody {
+  bytes sender_device_id = 1;  // 16
+  bytes msg_id = 2;            // 16, 무작위
+  uint64 created_at_ms = 3;
+  uint64 epoch = 4;            // 봉투의 epoch와 같아야 함
+  oneof kind {
+    ClipText text = 10;
+    ImageStart image_start = 11;
+    ImageChunk image_chunk = 12;
+    Control control = 20;
+  }
+}
+
+message ClipText {
+  string text = 1;
+}
+
+message ImageStart {
+  bytes transfer_id = 1;
+  string mime = 2;
+  uint64 total_len = 3;
+  uint32 chunk_count = 4;
+  bytes sha256 = 5;
+  uint32 width = 6;
+  uint32 height = 7;
+}
+
+message ImageChunk {
+  bytes transfer_id = 1;
+  uint32 index = 2;
+  bytes data = 3;
+}
+
+// ---------------------------------------------------------------------------
+// 3. 그룹 관리
+// ---------------------------------------------------------------------------
+
+enum Platform {
+  PLATFORM_UNSPECIFIED = 0;
+  APNS = 1;
+  FCM = 2;
+}
+
+message PushInfo {
+  Platform platform = 1;
+  string token = 2;
+}
+
+message Member {
+  bytes device_id = 1;
+  bytes sign_pub = 2;
+  bytes dh_pub = 3;
+  string name = 4;
+  uint64 added_at_ms = 5;
+  PushInfo push = 6;  // 선택
+}
+
+message Roster {
+  uint64 epoch = 1;
+  uint64 version = 2;
+  repeated Member members = 3;
+}
+
+message Control {
+  oneof kind {
+    RosterUpdate roster_update = 1;
+    Rekey rekey = 2;
+    EpochQuery epoch_query = 3;
+    ResendRequest resend = 4;
+  }
+}
+
+message RosterUpdate {
+  Roster roster = 1;
+}
+
+message Rekey {
+  uint64 new_epoch = 1;
+  Roster new_roster = 2;
+  repeated WrappedKey keys = 3;
+}
+
+// wrap_for 결과(Wrapped)를 수신 기기와 함께 담은 것.
+message WrappedKey {
+  bytes device_id = 1;
+  bytes eph_pub = 2;
+  bytes nonce = 3;
+  bytes ct = 4;
+}
+
+message EpochQuery {
+  uint64 known_epoch = 1;
+}
+
+message ResendRequest {
+  bytes msg_id = 1;
+}
+
+// ---------------------------------------------------------------------------
+// 4. 페어링
+// ---------------------------------------------------------------------------
+
+// pair_key로 봉인. aad = "clip-ferry/v1/pair" || pair_channel
+message PairEnvelope {
+  bytes nonce = 1;
+  bytes ct = 2;  // PairMessage 직렬화를 봉인한 것
+}
+
+message PairMessage {
+  oneof kind {
+    PairHello hello = 1;
+    PairOffer offer = 2;
+    PairWelcome welcome = 3;
+    PairReject reject = 4;
+  }
+}
+
+message PairHello {
+  bytes sign_pub = 1;
+  bytes dh_pub = 2;
+  string name = 3;
+}
+
+message PairOffer {
+  bytes sign_pub = 1;
+  bytes dh_pub = 2;
+  string name = 3;
+}
+
+// wrapped = wrap_for(B, group_key || epoch || 직렬화된 Roster)
+// signature = Ed25519(A sign_key, "clip-ferry v1 welcome" || eph_pub || nonce || ct)
+message PairWelcome {
+  WrappedKey wrapped = 1;
+  bytes signature = 2;
+}
+
+message PairReject {}
+
+// ---------------------------------------------------------------------------
+// 5. 릴레이 프로토콜
+// ---------------------------------------------------------------------------
+
+message ClientFrame {
+  oneof kind {
+    Subscribe subscribe = 1;
+    Unsubscribe unsubscribe = 2;
+    Publish publish = 3;
+    Ping ping = 4;
+  }
+}
+
+message Subscribe {
+  bytes channel_id = 1;  // 32
+  bytes device_tag = 2;  // 16
+}
+
+message Unsubscribe {
+  bytes channel_id = 1;
+}
+
+message Publish {
+  uint32 request_id = 1;
+  bytes channel_id = 2;
+  bytes payload = 3;                // SealedEnvelope 또는 PairEnvelope 직렬화 바이트
+  repeated bytes to = 4;            // 비어 있으면 같은 채널의 나 외 전원
+  repeated PushTarget push = 5;     // 대상이 오프라인일 때만 사용
+}
+
+message PushTarget {
+  bytes device_tag = 1;
+  Platform platform = 2;
+  string token = 3;
+}
+
+message Ping {}
+
+message RelayFrame {
+  oneof kind {
+    ServerHello hello = 1;
+    Deliver deliver = 2;
+    Ack ack = 3;
+    Error error = 4;
+    Presence presence = 5;
+    Pong pong = 6;
+  }
+}
+
+message ServerHello {
+  string server_version = 1;
+  Limits limits = 2;
+}
+
+message Limits {
+  uint32 max_frame_bytes = 1;
+  uint32 max_channels_per_conn = 2;
+  uint32 max_publish_per_sec = 3;
+}
+
+message Deliver {
+  bytes channel_id = 1;
+  bytes from_tag = 2;
+  bytes payload = 3;
+}
+
+message Ack {
+  uint32 request_id = 1;
+  uint32 delivered = 2;
+  uint32 pushed = 3;
+}
+
+enum ErrorCode {
+  ERROR_UNSPECIFIED = 0;
+  BAD_FRAME = 1;
+  TOO_LARGE = 2;
+  RATE_LIMITED = 3;
+  TOO_MANY_CHANNELS = 4;
+  NOT_SUBSCRIBED = 5;
+  UNSUPPORTED_VERSION = 6;
+  PUSH_FAILED = 7;
+}
+
+message Error {
+  uint32 request_id = 1;
+  ErrorCode code = 2;
+}
+
+message Presence {
+  bytes channel_id = 1;
+  repeated bytes online_tags = 2;
+}
+
+message Pong {}
