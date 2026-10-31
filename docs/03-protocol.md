@@ -113,6 +113,17 @@ message ImageChunk { bytes transfer_id = 1; uint32 index = 2; bytes data = 3; }
 - 받는 쪽: 메모리에서 조립, 전체 길이·청크 수·SHA-256 검증. 60초 안에 다 안 오면 폐기. 동시에 조립 중인 전송은 기기당 2개까지.
 - 최대 20 MiB.
 
+구현 메모 (`core/src/transfer.rs`)
+
+- `ImageStart` 검증: `transfer_id` 16바이트, `sha256` 32바이트, 허용 MIME, `0 < total_len ≤ 20 MiB`, `chunk_count == ceil(total_len / 256 KiB)`. 어긋나면 버린다.
+- 청크 검증: 번호가 범위 안, 아직 안 받은 번호, 길이가 정확히 256 KiB(마지막은 나머지). 하나라도 틀리면 **그 전송 전체를 버린다**(같은 번호 중복 포함). `ImageStart`보다 먼저 온 청크는 버린다. 시작 뒤에는 청크 순서가 뒤바뀌어도 된다.
+- 조립 키는 (보낸 기기, `transfer_id`)라서 다른 기기가 남의 전송에 청크를 넣을 수 없다. 한 기기당 동시 2개를 넘는 `ImageStart`는 버린다.
+- 60초는 `ImageStart`를 받은 시각부터 센다. 조립 중인 이미지는 메모리에만 두고, 검증이 모두 끝난 뒤에만 셸에 넘긴다.
+- 버린 이유는 `DropReason::BadImage` 하나로 센다(시작·청크 오류, 해시 불일치, 시간 초과 뒤 도착한 청크, 동시 한도 초과).
+- 받은 `mime`·`width`·`height`는 보낸 쪽이 적은 값이다. 셸은 헤더로 형식을 다시 확인하고 크기 한도를 걸어 디코딩한다.
+- 보내는 쪽(`Session::send_image`)은 `ImageStart`와 청크를 한 건씩 게시하고 릴레이의 `Ack`를 받은 뒤 다음을 보낸다. 릴레이가 `RateLimited`로 거부하면 50 ms 뒤 같은 봉투를 다시 게시한다(최대 100번).
+- 머리말만 보고 PNG·JPEG·GIF·WebP를 판별하고 크기를 읽는 `transfer::sniff`가 있다(디코딩하지 않는다).
+
 ---
 
 ## 3. 그룹 관리

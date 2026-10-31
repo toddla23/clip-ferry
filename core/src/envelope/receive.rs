@@ -36,6 +36,8 @@ pub enum DropReason {
     Duplicate,
     OutsideTimeWindow,
     FromSelf,
+    /// 이미지 조각이 규칙에 맞지 않음 (잘못된 시작·청크, 해시 불일치, 조립 중인 전송이 너무 많음 등)
+    BadImage,
     /// 이전 에포크로 왔지만 지금은 그룹에 없는 기기가 보냈다 (제거된 기기)
     SenderRemoved,
 }

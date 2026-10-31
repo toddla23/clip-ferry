@@ -8,7 +8,7 @@ use tokio::sync::{oneshot, watch};
 use tokio::task::JoinHandle;
 use tokio::time::timeout;
 
-use crate::api::{now_ms, Clip, ClipFerry, Error, GroupHealth, Incoming};
+use crate::api::{now_ms, Clip, ClipFerry, Error, GroupHealth, ImageClip, Incoming};
 use crate::envelope::Source;
 use crate::pb::ErrorCode;
 use crate::transport::{Client, Event, TransportConfig};
@@ -17,6 +17,8 @@ use crate::transport::{Client, Event, TransportConfig};
 pub trait EventSink: Send + Sync {
     /// 다른 기기가 보낸 텍스트를 받았다.
     fn on_clip(&self, clip: Clip);
+    /// 다른 기기가 보낸 이미지가 다 도착했다 (크기·해시 확인 끝, 디코딩은 셸이 한다).
+    fn on_image(&self, _image: ImageClip) {}
     fn on_status(&self, _status: ConnectionStatus) {}
     /// 기기 목록(로스터)이 바뀌었다.
     fn on_devices_changed(&self) {}
@@ -140,6 +142,7 @@ impl ClipFerry {
                     Event::Deliver(d) => {
                         match app.handle_deliver(&d.payload, Source::Relay, now_ms()) {
                             Ok(Incoming::Clip(clip)) => sink.on_clip(clip),
+                            Ok(Incoming::Image(image)) => sink.on_image(image),
                             Ok(Incoming::DevicesChanged) => sink.on_devices_changed(),
                             Ok(Incoming::EpochChanged(epoch)) => {
                                 sync_subscriptions(&app, &task_client, &task_subscribed);
@@ -252,6 +255,33 @@ impl Session {
     pub async fn send_text(&self, text: &str) -> Result<u32, SendError> {
         let sealed = self.app.seal_text(text, now_ms())?;
         self.publish(sealed.channel_id.0, sealed.bytes).await
+    }
+
+    /// 이미지를 그룹의 다른 기기들에게 보낸다 (PNG·JPEG·GIF·WebP, 최대 20 MiB).
+    /// 청크를 하나씩 순서대로 게시한다. 릴레이의 속도 제한에 걸리면 잠깐 쉬고 다시 보낸다.
+    /// 마지막 청크를 릴레이가 전달한 수를 돌려준다.
+    pub async fn send_image(
+        &self,
+        bytes: &[u8],
+        mime: &str,
+        width: u32,
+        height: u32,
+    ) -> Result<u32, SendError> {
+        let messages = self.app.seal_image(bytes, mime, width, height, now_ms())?;
+        let mut delivered = 0;
+        for m in messages {
+            let mut tries = 0;
+            delivered = loop {
+                match self.publish(m.channel_id.0, m.bytes.clone()).await {
+                    Err(SendError::Relay(ErrorCode::RateLimited)) if tries < 100 => {
+                        tries += 1;
+                        tokio::time::sleep(Duration::from_millis(50)).await;
+                    }
+                    other => break other?,
+                }
+            };
+        }
+        Ok(delivered)
     }
 
     /// 이 기기의 이름을 바꾸고 그룹에 알린다.
