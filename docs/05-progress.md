@@ -18,8 +18,8 @@
 | F08 | 기기 관리 · 키 회전 · 복구 | F07 | 완료 | 로컬·실제 프로세스 시나리오 확인, 세 OS CI 통과, main 머지 |
 | **M2** | **데스크톱** | | | |
 | F09 | 데스크톱 셸 기본 | F08 | 완료 | Windows 직접 확인, 세 OS CI 통과, main 머지. macOS 실행은 미확인(Mac 생기면 확인) |
-| F10 | 데스크톱 페어링 UI | F09 | 확인대기 | 로컬·실제 앱 자동 검증 통과(Windows). macOS·세 OS CI는 확인 필요 |
-| F11 | 텍스트 자동 동기화 | F10 | 대기 | |
+| F10 | 데스크톱 페어링 UI | F09 | 완료 | Windows 직접 확인, 세 OS CI 통과, main 머지(PR #11). macOS 실행은 미확인 |
+| F11 | 텍스트 자동 동기화 | F10 | 확인대기 | 로컬·실제 앱+CLI 자동 검증 통과(Windows). 직접 확인, macOS 실행, 세 OS CI는 확인 필요 |
 | F12 | 이미지 동기화 | F11 | 대기 | |
 | F13 | 기기 관리 UI와 설정 | F12 | 대기 | |
 | F14 | 릴레이 배포 | F13 | 대기 | |
@@ -49,6 +49,7 @@
 
 새 항목을 위에 추가한다. 형식: `YYYY-MM-DD F00 — 한 줄`
 
+- 2026-10-31 F11 — 데스크톱 클립보드 자동 동기화: `clipsync`(변경 감시 250ms·디바운스 300ms·에코 방지 해시·시작 전 내용/빈 텍스트/1MiB 초과 제외), `sysclip`(arboard + Windows 시퀀스 번호·민감 포맷 4종 / macOS changeCount·nspasteboard 숨김 타입), 셸은 받은 텍스트 쓰기와 `send_text`만, 단위 테스트 11개 + 실제 클립보드 테스트, 실제 앱+CLI 자동 검증 10항목, 확인대기
 - 2026-10-31 F10 — core/pair_flow(릴레이 페어링 진행을 코어로: start_invite/start_join), 데스크톱 마법사·초대(QR·코드·남은 시간)·SAS 승인/거절·참여 화면·기기 목록, 개발용 프로필(CF_DESKTOP_PROFILE), 페어링 통합 테스트 5개, 실제 앱+CLI 양방향 페어링 자동 검증, 확인대기
 - 2026-10-31 F09 — 사용자 확인·세 OS CI 통과·main 머지, 완료 (macOS 실행 미확인)
 - 2026-10-31 F09 — apps/desktop(Tauri 2 + React): 트레이(상태 색)·창 닫아도 상주·Credential Manager `SecretStore`·릴레이 주소 설정·코어 이벤트→UI, 처음 실행 시 기기·그룹 자동 생성(임시, 마법사는 F10), CI에 Node·WebKitGTK 단계 추가, 테스트 12개 + 키 저장소 1개, 확인대기

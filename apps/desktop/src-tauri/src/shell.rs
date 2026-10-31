@@ -12,7 +12,9 @@ use clip_ferry_core::store::SecretStore;
 use clip_ferry_core::transport::TransportConfig;
 use tauri::{AppHandle, Emitter};
 
+use crate::clipsync::ClipSync;
 use crate::settings::{self, Settings};
+use crate::sysclip::SystemClipboard;
 use crate::tray;
 use crate::view::{self, AppView, Connection, PairKind, PairPhase, PairingView};
 
@@ -34,13 +36,14 @@ struct Inner {
     relay_url: String,
     connection: Connection,
     error: Option<String>,
-    session: Option<Session>,
+    session: Option<Arc<Session>>,
     pairing: Option<Pairing>,
     next_pairing_id: u64,
 }
 
 pub struct Shell {
     app: Arc<ClipFerry>,
+    clip: Arc<ClipSync<SystemClipboard>>,
     handle: AppHandle,
     data_dir: PathBuf,
     seq: AtomicU64,
@@ -51,8 +54,11 @@ pub struct Shell {
 struct Sink(Weak<Shell>);
 
 impl EventSink for Sink {
-    fn on_clip(&self, _clip: Clip) {
-        // 클립보드 연동은 F11. 받은 내용은 여기서 쓰지도 기록하지도 않는다.
+    fn on_clip(&self, clip: Clip) {
+        // 받은 텍스트는 클립보드에만 쓴다. 디스크나 화면에는 남기지 않는다.
+        if let Some(shell) = self.0.upgrade() {
+            shell.clip.write_received(&clip.text);
+        }
     }
 
     fn on_status(&self, status: ConnectionStatus) {
@@ -99,6 +105,7 @@ impl Shell {
         let Settings { relay_url } = settings::load(&data_dir);
         Ok(Arc::new(Self {
             app,
+            clip: ClipSync::new(SystemClipboard::new()),
             handle,
             data_dir,
             seq: AtomicU64::new(1),
@@ -116,9 +123,41 @@ impl Shell {
     /// 앱이 켜질 때 한 번. 그룹이 있으면 릴레이에 연결하고, 없으면 첫 실행 마법사를 띄운다.
     /// tokio 런타임 안에서 불러야 한다.
     pub fn begin(self: &Arc<Self>) {
+        self.watch_clipboard();
         match self.app.status() {
             Ok(s) if s.epoch.is_some() => self.start(),
             _ => self.publish(),
+        }
+    }
+
+    /// 클립보드 감시를 시작한다(앱이 켜져 있는 동안 계속). 연결된 세션이 없으면 내용을 읽지 않는다.
+    fn watch_clipboard(self: &Arc<Self>) {
+        let (on, send) = (Arc::downgrade(self), Arc::downgrade(self));
+        let clip = self.clip.clone();
+        tauri::async_runtime::spawn(clip.watch(
+            move || on.upgrade().is_some_and(|s| s.has_session()),
+            move |text| {
+                let shell = send.upgrade();
+                async move {
+                    match shell {
+                        Some(shell) => shell.send_clip(&text).await,
+                        None => false,
+                    }
+                }
+            },
+        ));
+    }
+
+    fn has_session(&self) -> bool {
+        self.inner.lock().unwrap().session.is_some()
+    }
+
+    /// 복사한 텍스트를 그룹에 보낸다. 보냈으면 `true`.
+    async fn send_clip(&self, text: &str) -> bool {
+        let session = self.inner.lock().unwrap().session.clone();
+        match session {
+            Some(s) => s.send_text(text).await.is_ok(),
+            None => false,
         }
     }
 
@@ -133,7 +172,7 @@ impl Shell {
                 .start_session(&inner.relay_url, TransportConfig::default(), sink)
             {
                 Ok(session) => {
-                    inner.session = Some(session);
+                    inner.session = Some(Arc::new(session));
                     inner.connection = Connection::Reconnecting;
                     inner.error = None;
                 }
