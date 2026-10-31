@@ -8,6 +8,7 @@ pub mod pair_flow;
 pub mod pairing;
 pub mod session;
 pub mod store;
+pub mod transfer;
 pub mod transport;
 
 /// `proto/clip_ferry.proto`에서 생성한 와이어 타입.
