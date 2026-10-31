@@ -162,6 +162,8 @@ clip-ferry/
 
 ## 민감 클립보드 제외 (F11)
 
+**설정 `sync_sensitive`(기본 켜짐)**: 사용자가 모바일↔데스크톱으로 비밀번호를 옮겨 쓰는 일이 잦아 기본은 민감 표시가 있어도 동기화한다(전송은 종단간 암호화). 이 설정을 끄면 아래 표시가 붙은 복사는 읽지도 보내지도 않는다. 설정 화면은 F13, 그전에는 `settings.json`. 모바일 셸도 같은 설정을 따른다.
+
 - Windows: `ExcludeClipboardContentFromMonitorProcessing`, `CanIncludeInClipboardHistory = 0` 포맷이 있으면 보내지 않음
 - macOS: `org.nspasteboard.ConcealedType`, `org.nspasteboard.TransientType` 타입이 있으면 보내지 않음
 - Android: `ClipDescription.EXTRA_IS_SENSITIVE` 가 true면 보내지 않음

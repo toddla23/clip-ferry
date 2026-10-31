@@ -95,8 +95,9 @@ impl<C: Clipboard> ClipSync<C> {
 
     /// 클립보드를 지켜보다가 새 텍스트가 복사되면 `send`로 넘긴다. 끝나지 않는 작업이다.
     /// `enabled`가 `false`인 동안에는 클립보드 내용을 읽지도 않는다.
+    /// `skip_sensitive`이면 민감 표시가 붙은 복사는 읽지도 보내지도 않는다.
     /// `send`가 `false`를 돌려주면(못 보냄) 다시 복사할 때 보내지도록 기록을 지운다.
-    pub async fn watch<E, S, Fut>(self: Arc<Self>, enabled: E, mut send: S)
+    pub async fn watch<E, S, Fut>(self: Arc<Self>, enabled: E, skip_sensitive: bool, mut send: S)
     where
         E: Fn() -> bool,
         S: FnMut(String) -> Fut,
@@ -119,7 +120,7 @@ impl<C: Clipboard> ClipSync<C> {
                 token = now;
             }
             seen = token;
-            if !enabled() || self.clip.is_sensitive() {
+            if !enabled() || (skip_sensitive && self.clip.is_sensitive()) {
                 continue;
             }
             let Some(text) = self.clip.read_text() else {
@@ -192,12 +193,22 @@ mod tests {
 
     /// 감시를 시작한다. `ok`가 `false`면 보내기가 실패한 것처럼 행동한다.
     async fn run(fake: &Fake, enabled: Arc<Mutex<bool>>, ok: bool) -> (Arc<ClipSync<Fake>>, Sent) {
+        run_with(fake, enabled, ok, true).await
+    }
+
+    async fn run_with(
+        fake: &Fake,
+        enabled: Arc<Mutex<bool>>,
+        ok: bool,
+        skip_sensitive: bool,
+    ) -> (Arc<ClipSync<Fake>>, Sent) {
         let sync = ClipSync::new(fake.clone());
         let sent: Sent = Arc::default();
         let out = sent.clone();
         let on = enabled;
         tokio::spawn(sync.clone().watch(
             move || *on.lock().unwrap(),
+            skip_sensitive,
             move |text| {
                 let out = out.clone();
                 async move {
@@ -303,6 +314,15 @@ mod tests {
         fake.copy("public");
         settle().await;
         assert_eq!(sent(&out), ["public"]);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn sensitive_content_is_sent_when_the_setting_allows_it() {
+        let fake = Fake::default();
+        let (_sync, out) = run_with(&fake, on(), true, false).await;
+        fake.copy_secret("hunter2");
+        settle().await;
+        assert_eq!(sent(&out), ["hunter2"]);
     }
 
     #[tokio::test(start_paused = true)]
