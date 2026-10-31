@@ -125,13 +125,10 @@ mod tests {
     fn garbage_and_unlisted_formats_are_rejected() {
         assert!(decode(b"not an image at all").is_err());
         assert!(decode(&[]).is_err());
-        // BMP는 이미지지만 허용 목록에 없다.
-        let img = DynamicImage::ImageRgba8(image::RgbaImage::new(2, 2));
-        let mut bmp = Cursor::new(Vec::new());
-        img.write_to(&mut bmp, ImageFormat::Bmp).unwrap();
-        assert!(decode(&bmp.into_inner())
-            .unwrap_err()
-            .contains("지원하지 않는"));
+        // BMP는 이미지지만 허용 목록에 없다. (인코더 feature는 플랫폼마다 달라 시그니처만 쓴다.)
+        let mut bmp = b"BM".to_vec();
+        bmp.extend_from_slice(&[0u8; 64]);
+        assert!(decode(&bmp).unwrap_err().contains("지원하지 않는"));
     }
 
     #[test]
