@@ -5,7 +5,7 @@ use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Manager};
 
-use crate::view::{AppView, Connection, Health};
+use crate::view::{AppView, Connection, Health, Stage};
 
 const TRAY_ID: &str = "main";
 const SIZE: u32 = 32;
@@ -19,6 +19,10 @@ pub enum Tone {
 }
 
 pub fn tone(view: &AppView) -> Tone {
+    // 아직 그룹이 없다 (첫 실행 마법사 중)
+    if view.stage == Stage::Setup {
+        return Tone::Off;
+    }
     if view.health != Health::Active {
         return Tone::Problem;
     }
@@ -102,7 +106,9 @@ pub fn update(app: &AppHandle, view: &AppView) {
     let Some(tray) = app.tray_by_id(TRAY_ID) else {
         return;
     };
-    let label = if view.health == Health::Active {
+    let label = if view.stage == Stage::Setup {
+        "설정 필요"
+    } else if view.health == Health::Active {
         view.connection.label()
     } else {
         "다시 페어링 필요"
@@ -117,15 +123,10 @@ mod tests {
 
     fn view(connection: Connection, health: Health) -> AppView {
         AppView {
-            seq: 0,
+            stage: Stage::Ready,
             connection,
-            device_name: String::new(),
-            device_id: String::new(),
-            epoch: None,
-            member_count: 0,
             health,
-            relay_url: String::new(),
-            error: None,
+            ..AppView::default()
         }
     }
 
@@ -145,6 +146,16 @@ mod tests {
             tone(&view(Connection::Connected, Health::Removed)),
             Tone::Problem
         );
+    }
+
+    #[test]
+    fn setup_is_gray_even_before_any_connection() {
+        let v = AppView {
+            stage: Stage::Setup,
+            connection: Connection::Reconnecting,
+            ..AppView::default()
+        };
+        assert_eq!(tone(&v), Tone::Off);
     }
 
     #[test]

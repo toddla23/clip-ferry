@@ -38,3 +38,24 @@ button {
 }
 .warn { color: var(--warn); }
 .note { color: var(--muted); margin: 8px 0 0; }
+h2 { font-size: 15px; margin: 0; }
+section { margin: 16px 0; }
+textarea {
+  width: 100%; padding: 6px 8px; color: var(--fg); background: transparent; resize: none;
+  border: 1px solid var(--line); border-radius: 6px; font: inherit;
+}
+textarea.code { font: 12px/1.5 Consolas, monospace; margin: 8px 0; }
+input:disabled { opacity: 0.6; }
+button:disabled { opacity: 0.5; cursor: default; }
+button.secondary { background: transparent; color: var(--fg); border: 1px solid var(--line); }
+.stack { display: grid; gap: 8px; margin-top: 16px; }
+.row.between { justify-content: space-between; align-items: center; }
+.muted { color: var(--muted); font: 12px Consolas, monospace; margin-left: auto; }
+.devices { list-style: none; margin: 8px 0 0; padding: 0; }
+.devices li { display: flex; gap: 8px; align-items: center; padding: 6px 0; border-top: 1px solid var(--line); }
+.badge { font-size: 11px; padding: 0 6px; border-radius: 8px; background: var(--accent); color: #fff; }
+.sas { font: 600 36px/1.2 Consolas, monospace; letter-spacing: 4px; text-align: center; margin: 14px 0; }
+.qr { display: block; width: 190px; height: 190px; margin: 10px auto; border-radius: 6px; }
+main > button { margin-top: 12px; }
+label + .stack, label + .row { margin-top: 12px; }
+label > input, label > textarea { display: block; width: 100%; margin-top: 6px; }

@@ -6,6 +6,20 @@ use serde::{Deserialize, Serialize};
 
 pub const DEFAULT_RELAY: &str = "ws://127.0.0.1:8787";
 
+/// 개발용 프로필 이름(`CF_DESKTOP_PROFILE`). 영문·숫자·`-`·`_`만 허용하고, 아니면 무시한다.
+pub fn dev_profile() -> Option<String> {
+    let name = std::env::var("CF_DESKTOP_PROFILE").ok()?;
+    valid_profile(&name).then_some(name)
+}
+
+fn valid_profile(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 32
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Settings {
     pub relay_url: String,
@@ -81,6 +95,14 @@ mod tests {
             "ws://a b",
         ] {
             assert!(validate_relay_url(bad).is_err(), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn profile_names_cannot_escape_the_data_dir() {
+        assert!(valid_profile("t1") && valid_profile("dev_2-a"));
+        for bad in ["", "..", "a/b", "a\\b", "a b", "한글"] {
+            assert!(!valid_profile(bad), "{bad:?}");
         }
     }
 
