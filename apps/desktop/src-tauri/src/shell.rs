@@ -60,16 +60,31 @@ impl EventSink for Sink {
     fn on_clip(&self, clip: Clip) {
         // 받은 텍스트는 클립보드에만 쓴다. 디스크나 화면에는 남기지 않는다.
         if let Some(shell) = self.0.upgrade() {
-            shell.clip.write_received(&Content::Text(clip.text));
+            if let Err(reason) = shell.clip.write_received(&Content::Text(clip.text)) {
+                shell.notify(&format!(
+                    "{}에서 받은 텍스트를 클립보드에 쓰지 못했습니다 ({reason})",
+                    clip.from_name
+                ));
+            }
         }
     }
 
     fn on_image(&self, image: ImageClip) {
-        // 디코딩은 무거우므로 따로 돌린다. 풀 수 없는 이미지(깨졌거나 너무 큼)는 조용히 버린다.
+        // 디코딩은 무거우므로 따로 돌린다. 받은 이미지를 열거나 쓰지 못하면 알림으로 알린다.
         if let Some(shell) = self.0.upgrade() {
             tauri::async_runtime::spawn_blocking(move || {
-                if let Ok(img) = imgcodec::decode(&image.bytes) {
-                    shell.clip.write_received(&Content::Image(img));
+                let from = &image.from_name;
+                match imgcodec::decode(&image.bytes) {
+                    Err(_) => shell.notify(&format!(
+                        "{from}에서 받은 이미지를 열 수 없어 버렸습니다 (깨졌거나 너무 큰 이미지)"
+                    )),
+                    Ok(img) => {
+                        if let Err(reason) = shell.clip.write_received(&Content::Image(img)) {
+                            shell.notify(&format!(
+                                "{from}에서 받은 이미지를 클립보드에 쓰지 못했습니다 ({reason})"
+                            ));
+                        }
+                    }
                 }
             });
         }

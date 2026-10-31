@@ -148,19 +148,22 @@ impl<C: Clipboard> ClipSync<C> {
     }
 
     /// 다른 기기에서 받은 내용을 클립보드에 쓴다. 감지기가 이것을 새 복사로 오해하지 않는다.
-    pub fn write_received(&self, content: &Content) {
+    /// 쓰지 못하면 사용자에게 보여 줄 한국어 이유를 돌려준다.
+    pub fn write_received(&self, content: &Content) -> Result<(), String> {
         if !Echo::sendable(content) {
-            return;
+            return Err("다룰 수 있는 크기를 넘거나 비어 있습니다".to_string());
         }
         // 쓰기 전에 기록해야, 쓰자마자 감지기가 읽어도 에코로 판단한다.
         let digest = Echo::digest(content);
         self.echo.record(digest);
-        match self.clip.write(content) {
-            Ok(()) => self
-                .own_write
-                .store(self.clip.change_token(), Ordering::SeqCst),
-            Err(_) => self.echo.forget(digest),
+        let result = self.clip.write(content);
+        // 쓰다가 실패해도 클립보드가 일부 바뀌었을 수 있다. 그 변경도 우리가 한 것이라 복사로 보지 않는다.
+        self.own_write
+            .store(self.clip.change_token(), Ordering::SeqCst);
+        if result.is_err() {
+            self.echo.forget(digest);
         }
+        result
     }
 
     /// 클립보드를 지켜보다가 새 내용이 복사되면 `send`로 넘긴다. 끝나지 않는 작업이다.
@@ -221,6 +224,8 @@ mod tests {
         reads: u32,
         /// 쓴 뒤 내용이 조금 달라지는 클립보드(이미지 재인코딩)를 흉내 낸다.
         distort_writes: bool,
+        /// 쓰다가 일부만 바뀐 채 실패하는 클립보드를 흉내 낸다.
+        fail_writes: bool,
     }
 
     /// 운영체제 대신 쓰는 가짜 클립보드. 쓰기도 실제처럼 토큰을 올린다.
@@ -268,6 +273,9 @@ mod tests {
         fn distort_writes(&self) {
             self.0.lock().unwrap().distort_writes = true;
         }
+        fn fail_writes(&self) {
+            self.0.lock().unwrap().fail_writes = true;
+        }
     }
 
     impl Clipboard for Fake {
@@ -283,6 +291,10 @@ mod tests {
             s.content.clone()
         }
         fn write(&self, content: &Content) -> Result<(), String> {
+            if self.0.lock().unwrap().fail_writes {
+                self.copy(content.clone());
+                return Err("클립보드가 쓰기를 거부했습니다".to_string());
+            }
             let distort = self.0.lock().unwrap().distort_writes;
             let written = match content {
                 Content::Image(i) if distort => {
@@ -380,7 +392,7 @@ mod tests {
     async fn received_text_is_written_but_not_sent_back() {
         let fake = Fake::default();
         let (sync, out) = run(&fake, on(), true).await;
-        sync.write_received(&text("from peer"));
+        sync.write_received(&text("from peer")).unwrap();
         settle().await;
         assert_eq!(fake.text().as_deref(), Some("from peer"));
         assert!(sent_texts(&out).is_empty());
@@ -390,7 +402,7 @@ mod tests {
     async fn copying_something_else_after_a_receive_is_sent() {
         let fake = Fake::default();
         let (sync, out) = run(&fake, on(), true).await;
-        sync.write_received(&text("from peer"));
+        sync.write_received(&text("from peer")).unwrap();
         settle().await;
         fake.copy_text("mine");
         settle().await;
@@ -508,7 +520,7 @@ mod tests {
     async fn a_received_image_is_written_and_not_sent_back() {
         let fake = Fake::default();
         let (sync, out) = run(&fake, on(), true).await;
-        sync.write_received(&image(5));
+        sync.write_received(&image(5)).unwrap();
         settle().await;
         assert!(fake.content() == Some(image(5)));
         assert!(out.lock().unwrap().is_empty());
@@ -519,7 +531,7 @@ mod tests {
         let fake = Fake::default();
         fake.distort_writes();
         let (sync, out) = run(&fake, on(), true).await;
-        sync.write_received(&image(5));
+        sync.write_received(&image(5)).unwrap();
         settle().await;
         assert!(
             fake.content() != Some(image(5)),
@@ -554,9 +566,27 @@ mod tests {
         fake.copy(empty.clone());
         settle().await;
         assert!(out.lock().unwrap().is_empty());
-        sync.write_received(&bad);
-        sync.write_received(&empty);
+        assert!(sync.write_received(&bad).is_err());
+        assert!(sync.write_received(&empty).is_err());
         assert!(fake.content() == Some(empty));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_failed_write_reports_the_reason_and_the_partial_result_is_not_echoed() {
+        let fake = Fake::default();
+        fake.fail_writes();
+        let (sync, out) = run(&fake, on(), true).await;
+        let err = sync.write_received(&image(3)).unwrap_err();
+        assert!(err.contains("거부"), "{err}");
+        settle().await;
+        assert!(
+            out.lock().unwrap().is_empty(),
+            "쓰다 만 내용을 다른 기기로 되돌려 보내면 안 된다"
+        );
+        // 실패한 뒤의 진짜 복사는 보낸다.
+        fake.copy_text("next");
+        settle().await;
+        assert_eq!(sent_texts(&out), ["next"]);
     }
 
     #[tokio::test(start_paused = true)]
