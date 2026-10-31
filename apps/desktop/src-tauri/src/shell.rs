@@ -44,6 +44,7 @@ struct Inner {
 pub struct Shell {
     app: Arc<ClipFerry>,
     clip: Arc<ClipSync<SystemClipboard>>,
+    sync_sensitive: bool,
     handle: AppHandle,
     data_dir: PathBuf,
     seq: AtomicU64,
@@ -102,10 +103,14 @@ impl Shell {
             },
             secrets,
         )?);
-        let Settings { relay_url } = settings::load(&data_dir);
+        let Settings {
+            relay_url,
+            sync_sensitive,
+        } = settings::load(&data_dir);
         Ok(Arc::new(Self {
             app,
             clip: ClipSync::new(SystemClipboard::new()),
+            sync_sensitive,
             handle,
             data_dir,
             seq: AtomicU64::new(1),
@@ -136,6 +141,7 @@ impl Shell {
         let clip = self.clip.clone();
         tauri::async_runtime::spawn(clip.watch(
             move || on.upgrade().is_some_and(|s| s.has_session()),
+            !self.sync_sensitive,
             move |text| {
                 let shell = send.upgrade();
                 async move {
@@ -196,6 +202,7 @@ impl Shell {
             &self.data_dir,
             &Settings {
                 relay_url: relay_url.clone(),
+                sync_sensitive: self.sync_sensitive,
             },
         )
         .map_err(|_| "설정을 저장하지 못했습니다".to_string())?;

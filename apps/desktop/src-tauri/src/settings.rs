@@ -23,12 +23,21 @@ fn valid_profile(name: &str) -> bool {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Settings {
     pub relay_url: String,
+    /// 비밀번호 관리자 등이 "보내지 말라"고 표시한 복사도 동기화한다 (기본: 예).
+    /// 끄면 표시가 붙은 복사는 읽지도 보내지도 않는다. 설정 화면은 F13에서 만든다.
+    #[serde(default = "yes")]
+    pub sync_sensitive: bool,
+}
+
+fn yes() -> bool {
+    true
 }
 
 impl Default for Settings {
     fn default() -> Self {
         Self {
             relay_url: DEFAULT_RELAY.to_string(),
+            sync_sensitive: true,
         }
     }
 }
@@ -61,7 +70,10 @@ pub fn load(dir: &Path) -> Settings {
             .ok()
             .and_then(|v| validate_relay_url(&v).ok())
             .unwrap_or_else(|| DEFAULT_RELAY.to_string());
-        Settings { relay_url }
+        Settings {
+            relay_url,
+            ..Settings::default()
+        }
     })
 }
 
@@ -111,9 +123,23 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let s = Settings {
             relay_url: "ws://10.0.0.5:9000".to_string(),
+            sync_sensitive: false,
         };
         save(dir.path(), &s).unwrap();
         assert_eq!(load(dir.path()), s);
+    }
+
+    #[test]
+    fn old_settings_file_without_the_new_field_keeps_syncing_sensitive() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("settings.json"),
+            br#"{"relay_url":"ws://10.0.0.5:9000"}"#,
+        )
+        .unwrap();
+        let s = load(dir.path());
+        assert_eq!(s.relay_url, "ws://10.0.0.5:9000");
+        assert!(s.sync_sensitive);
     }
 
     #[test]
