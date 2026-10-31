@@ -91,6 +91,8 @@ pub trait SecretStore: Send + Sync {         // 셸이 구현 (플랫폼 보안 
 | Android (`apps/android/`) | Kotlin + Jetpack Compose | 포그라운드 서비스, 빠른 설정 타일, 알림 버튼, 공유·텍스트 선택 메뉴, QR 스캔, FCM |
 | iOS (`apps/ios/`) | Swift + SwiftUI | 포그라운드 수신, App Intents, Share Extension, Notification Service Extension, QR 스캔, APNs |
 
+데스크톱 빌드 메모: Tauri 매크로가 컴파일 때 `apps/desktop/dist`(UI 빌드 결과)를 읽는다. 새로 받은 저장소에서는 `cd apps/desktop && npm ci && npm run build`를 먼저 한 번 해야 `cargo build/test --workspace`가 된다(CI도 같은 순서). `src-tauri`는 `shell`(코어 연결), `tray`, `secrets`(keyring), `settings`, `view`(UI용 요약)로 나뉜다.
+
 셸에 비즈니스 로직을 넣지 않는다. "무엇을 보낼지·받은 걸 어디에 쓸지"만 결정한다.
 
 ## 레포 구조

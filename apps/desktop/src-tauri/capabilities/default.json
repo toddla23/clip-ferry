@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "메인 창이 쓸 수 있는 기본 권한",
+  "windows": ["main"],
+  "permissions": ["core:default"]
+}

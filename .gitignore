@@ -4,6 +4,7 @@
 # 노드/Tauri
 node_modules/
 dist/
+/apps/desktop/src-tauri/gen/
 
 # Android / iOS
 .gradle/
