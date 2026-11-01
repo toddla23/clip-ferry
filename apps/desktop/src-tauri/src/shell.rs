@@ -1,17 +1,20 @@
 //! 코어와 화면(트레이·창)을 이어 주는 얇은 층.
 //! 암호·프로토콜 로직은 없다. 코어를 열고, 세션과 페어링을 시작하고, 상태를 화면에 알린다.
 
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 
 use clip_ferry_core::api::{Clip, ClipFerry, Config, Error, GroupHealth, ImageClip};
+use clip_ferry_core::crypto::DeviceId;
 use clip_ferry_core::pair_flow::{self, InviteFlow, InviteUpdate, JoinFlow, JoinUpdate};
 use clip_ferry_core::session::{ConnectionStatus, EventSink, Session};
 use clip_ferry_core::store::SecretStore;
 use clip_ferry_core::transfer::MAX_IMAGE_BYTES;
 use clip_ferry_core::transport::TransportConfig;
 use tauri::{AppHandle, Emitter};
+use tauri_plugin_autostart::ManagerExt;
 
 use crate::clipsync::{ClipSync, Content};
 use crate::imgcodec;
@@ -36,6 +39,13 @@ struct Pairing {
 
 struct Inner {
     relay_url: String,
+    send_enabled: bool,
+    receive_enabled: bool,
+    /// 트레이의 일시정지. 저장하지 않는다(앱을 다시 켜면 풀린다).
+    paused: bool,
+    autostart: bool,
+    /// 지금 그룹 채널에 붙어 있는 기기의 짧은 id.
+    online: HashSet<String>,
     connection: Connection,
     error: Option<String>,
     session: Option<Arc<Session>>,
@@ -60,6 +70,9 @@ impl EventSink for Sink {
     fn on_clip(&self, clip: Clip) {
         // 받은 텍스트는 클립보드에만 쓴다. 디스크나 화면에는 남기지 않는다.
         if let Some(shell) = self.0.upgrade() {
+            if !shell.can_receive() {
+                return;
+            }
             if let Err(reason) = shell.clip.write_received(&Content::Text(clip.text)) {
                 shell.notify(&format!(
                     "{}에서 받은 텍스트를 클립보드에 쓰지 못했습니다 ({reason})",
@@ -72,6 +85,9 @@ impl EventSink for Sink {
     fn on_image(&self, image: ImageClip) {
         // 디코딩은 무거우므로 따로 돌린다. 받은 이미지를 열거나 쓰지 못하면 알림으로 알린다.
         if let Some(shell) = self.0.upgrade() {
+            if !shell.can_receive() {
+                return;
+            }
             tauri::async_runtime::spawn_blocking(move || {
                 let from = &image.from_name;
                 match imgcodec::decode(&image.bytes) {
@@ -108,6 +124,14 @@ impl EventSink for Sink {
     fn on_group_health(&self, _health: GroupHealth) {
         self.refresh();
     }
+
+    fn on_presence(&self, online: Vec<DeviceId>) {
+        if let Some(shell) = self.0.upgrade() {
+            shell.inner.lock().unwrap().online =
+                online.iter().map(|d| view::short_id(&d.0)).collect();
+            shell.publish();
+        }
+    }
 }
 
 impl Sink {
@@ -134,7 +158,10 @@ impl Shell {
         let Settings {
             relay_url,
             sync_sensitive,
+            send_enabled,
+            receive_enabled,
         } = settings::load(&data_dir);
+        let autostart = handle.autolaunch().is_enabled().unwrap_or(false);
         Ok(Arc::new(Self {
             app,
             clip: ClipSync::new(SystemClipboard::new()),
@@ -144,6 +171,11 @@ impl Shell {
             seq: AtomicU64::new(1),
             inner: Mutex::new(Inner {
                 relay_url,
+                send_enabled,
+                receive_enabled,
+                paused: false,
+                autostart,
+                online: HashSet::new(),
                 connection: Connection::Reconnecting,
                 error: None,
                 session: None,
@@ -168,7 +200,10 @@ impl Shell {
         let (on, send) = (Arc::downgrade(self), Arc::downgrade(self));
         let clip = self.clip.clone();
         tauri::async_runtime::spawn(clip.watch(
-            move || on.upgrade().is_some_and(|s| s.has_session()),
+            move || {
+                on.upgrade()
+                    .is_some_and(|s| s.has_session() && s.can_send())
+            },
             !self.sync_sensitive,
             move |content| {
                 let shell = send.upgrade();
@@ -186,8 +221,24 @@ impl Shell {
         self.inner.lock().unwrap().session.is_some()
     }
 
+    /// 지금 복사한 내용을 보내도 되는가 (일시정지가 아니고, 보내기가 켜져 있다).
+    fn can_send(&self) -> bool {
+        let inner = self.inner.lock().unwrap();
+        inner.send_enabled && !inner.paused
+    }
+
+    /// 지금 받은 내용을 클립보드에 써도 되는가.
+    fn can_receive(&self) -> bool {
+        let inner = self.inner.lock().unwrap();
+        inner.receive_enabled && !inner.paused
+    }
+
     /// 복사한 내용을 그룹에 보낸다. 다시 시도할 필요가 없으면(보냈거나, 일부러 안 보냈으면) `true`.
     async fn send_clip(&self, content: Content) -> bool {
+        // 읽은 뒤 일시정지되었을 수 있다. 보내지 않기로 한 것이므로 다시 시도하지 않는다.
+        if !self.can_send() {
+            return true;
+        }
         let session = self.inner.lock().unwrap().session.clone();
         let Some(session) = session else {
             return false;
@@ -258,16 +309,63 @@ impl Shell {
         self.publish();
     }
 
+    /// 지금 값에 `f`를 적용해 설정 파일을 쓴다. 일시정지·자동 시작은 저장하지 않는다.
+    fn save_settings(&self, f: impl FnOnce(&mut Settings)) -> Result<(), String> {
+        let inner = self.inner.lock().unwrap();
+        let mut s = Settings {
+            relay_url: inner.relay_url.clone(),
+            sync_sensitive: self.sync_sensitive,
+            send_enabled: inner.send_enabled,
+            receive_enabled: inner.receive_enabled,
+        };
+        f(&mut s);
+        settings::save(&self.data_dir, &s).map_err(|_| "설정을 저장하지 못했습니다".to_string())
+    }
+
+    /// 보내기·받기를 각각 켜고 끈다.
+    pub fn set_sync(&self, send: bool, receive: bool) -> Result<AppView, String> {
+        self.save_settings(|s| {
+            s.send_enabled = send;
+            s.receive_enabled = receive;
+        })?;
+        {
+            let mut inner = self.inner.lock().unwrap();
+            inner.send_enabled = send;
+            inner.receive_enabled = receive;
+        }
+        self.publish();
+        Ok(self.view())
+    }
+
+    /// 일시정지(`true`)하거나 재개(`false`)한다. 일시정지 중에는 보내지도 받지도 않는다.
+    pub fn set_paused(&self, paused: bool) -> AppView {
+        self.inner.lock().unwrap().paused = paused;
+        self.publish();
+        self.view()
+    }
+
+    pub fn toggle_pause(&self) {
+        let paused = self.inner.lock().unwrap().paused;
+        self.set_paused(!paused);
+    }
+
+    /// 로그인할 때 자동으로 시작할지 정한다.
+    pub fn set_autostart(&self, on: bool) -> Result<AppView, String> {
+        let launch = self.handle.autolaunch();
+        let result = if on {
+            launch.enable()
+        } else {
+            launch.disable()
+        };
+        result.map_err(|_| "자동 시작 설정을 바꾸지 못했습니다".to_string())?;
+        self.inner.lock().unwrap().autostart = launch.is_enabled().unwrap_or(on);
+        self.publish();
+        Ok(self.view())
+    }
+
     pub fn set_relay_url(self: &Arc<Self>, input: &str) -> Result<AppView, String> {
         let relay_url = settings::validate_relay_url(input)?;
-        settings::save(
-            &self.data_dir,
-            &Settings {
-                relay_url: relay_url.clone(),
-                sync_sensitive: self.sync_sensitive,
-            },
-        )
-        .map_err(|_| "설정을 저장하지 못했습니다".to_string())?;
+        self.save_settings(|s| s.relay_url = relay_url.clone())?;
         self.inner.lock().unwrap().relay_url = relay_url;
         // 그룹이 아직 없으면 연결할 것이 없다.
         if self.app.connection().is_some() {
@@ -275,6 +373,60 @@ impl Shell {
         } else {
             self.publish();
         }
+        Ok(self.view())
+    }
+
+    // ------------------------------------------------------------ 기기 관리
+
+    fn session(&self) -> Result<Arc<Session>, String> {
+        self.inner
+            .lock()
+            .unwrap()
+            .session
+            .clone()
+            .ok_or_else(|| "릴레이에 연결된 뒤에 할 수 있습니다".to_string())
+    }
+
+    /// 이 기기의 이름을 바꾸고 그룹에 알린다.
+    pub async fn rename_device(&self, name: &str) -> Result<AppView, String> {
+        let name = name.trim();
+        if name.is_empty() || name.len() > 64 {
+            return Err("이름은 1~64바이트여야 합니다".into());
+        }
+        self.session()?
+            .rename(name)
+            .await
+            .map_err(|e| e.to_string())?;
+        self.publish();
+        Ok(self.view())
+    }
+
+    /// 다른 기기를 그룹에서 제거한다(키 회전). `id`는 목록에 보이는 짧은 id.
+    pub async fn remove_device(&self, id: &str) -> Result<AppView, String> {
+        let me = self.app.status().map_err(|e| e.to_string())?.device_id;
+        if view::short_id(&me.0) == id {
+            return Err("이 기기는 제거할 수 없습니다".into());
+        }
+        self.session()?
+            .remove_device(id)
+            .await
+            .map_err(|e| e.to_string())?;
+        self.publish();
+        Ok(self.view())
+    }
+
+    /// 제거되었거나 오래 연결되지 않은 기기가 그룹에서 나가 처음 화면으로 돌아간다(다시 페어링하려고).
+    pub fn leave_group(&self) -> Result<AppView, String> {
+        {
+            let mut inner = self.inner.lock().unwrap();
+            inner.session = None;
+            inner.pairing = None;
+            inner.online.clear();
+            inner.connection = Connection::Stopped;
+            inner.error = None;
+        }
+        self.app.leave_group().map_err(|e| e.to_string())?;
+        self.publish();
         Ok(self.view())
     }
 
@@ -500,17 +652,33 @@ impl Shell {
     // ------------------------------------------------------------ 화면
 
     pub fn view(&self) -> AppView {
-        let (connection, relay_url, error, pairing) = {
+        let (connection, relay_url, error, pairing, online, flags) = {
             let inner = self.inner.lock().unwrap();
             (
                 inner.connection,
                 inner.relay_url.clone(),
                 inner.error.clone(),
                 inner.pairing.as_ref().map(|p| p.view.clone()),
+                inner.online.clone(),
+                (
+                    inner.send_enabled,
+                    inner.receive_enabled,
+                    inner.paused,
+                    inner.autostart,
+                ),
             )
         };
         let mut view = view::build(&self.app, connection, &relay_url, error);
         view.pairing = pairing;
+        (
+            view.send_enabled,
+            view.receive_enabled,
+            view.paused,
+            view.autostart,
+        ) = flags;
+        for d in &mut view.devices {
+            d.online = online.contains(&d.id) || (d.is_self && connection == Connection::Connected);
+        }
         view.default_name = default_device_name();
         view.seq = self.seq.fetch_add(1, Ordering::SeqCst);
         view

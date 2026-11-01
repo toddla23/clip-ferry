@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import Home from "./Home";
 import { InviteScreen, JoinScreen } from "./Pairing";
+import Repair from "./Repair";
 import Wizard from "./Wizard";
 import type { AppView } from "./types";
 
@@ -37,6 +38,7 @@ export default function App() {
   const p = view.pairing;
   if (p?.kind === "join") return <JoinScreen p={p} />;
   if (view.stage === "setup") return <Wizard view={view} />;
+  if (view.health !== "active") return <Repair view={view} />;
   if (p?.kind === "invite") return <InviteScreen p={p} />;
   return <Home view={view} onView={apply} />;
 }

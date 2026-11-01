@@ -503,3 +503,52 @@ fn malformed_rekeys_are_ignored() {
     assert_eq!(deliver(&c, &valid, T0 + 1), Ok(Incoming::EpochChanged(2)));
     assert_eq!(c.app.status().unwrap().epoch, Some(2));
 }
+
+#[test]
+fn removed_device_can_leave_and_pair_again() {
+    let (a, b, c) = trio();
+    let msgs = a.app.remove_device("phone", T0 + 1).unwrap();
+    deliver(&c, &msgs[0].bytes, T0 + 1).unwrap();
+    assert_eq!(deliver(&b, &msgs[0].bytes, T0 + 1), Ok(Incoming::Removed));
+    let id = b.app.status().unwrap().device_id;
+
+    // 나가면 그룹이 없는 초기화된 기기가 된다. 기기 키(id)와 이름은 그대로다.
+    b.app.leave_group().unwrap();
+    let st = b.app.status().unwrap();
+    assert_eq!((st.epoch, st.member_count), (None, 0));
+    assert_eq!(st.health, GroupHealth::Active);
+    assert_eq!((st.device_id, st.device_name.as_str()), (id, "phone"));
+    assert!(b.app.connection().is_none() && b.app.subscriptions().is_empty());
+    assert!(b.app.devices().is_empty());
+
+    // 다시 열어도 그대로이고, 같은 기기로 다시 참여할 수 있다.
+    let reopened = open(b.dir.path(), &b.secrets);
+    assert_eq!(reopened.status().unwrap().epoch, None);
+    pair(&a, &b);
+    let st = b.app.status().unwrap();
+    assert_eq!(st.device_id, id);
+    assert!(st.epoch.is_some() && st.health == GroupHealth::Active);
+}
+
+#[test]
+fn leave_group_without_a_group_is_a_no_op() {
+    let p = profile("solo", false);
+    p.app.leave_group().unwrap();
+    assert_eq!(p.app.status().unwrap().epoch, None);
+}
+
+#[test]
+fn online_devices_maps_presence_tags_to_members() {
+    let (a, b, c) = trio();
+    let tag = |p: &Profile| p.app.subscriptions()[0].device_tag.0.to_vec();
+    let id = |p: &Profile| p.app.status().unwrap().device_id;
+
+    // B만 붙어 있다 (A 자신은 항상 포함, C는 오프라인, 모르는 태그는 무시)
+    let online = a.app.online_devices(&[tag(&b), vec![9; 16]]);
+    assert!(online.contains(&id(&a)) && online.contains(&id(&b)));
+    assert!(!online.contains(&id(&c)));
+    assert_eq!(online.len(), 2);
+
+    // 아무도 없어도 자기 자신은 있다.
+    assert_eq!(a.app.online_devices(&[]), vec![id(&a)]);
+}

@@ -6,6 +6,7 @@ export interface DeviceView {
   id: string;
   name: string;
   isSelf: boolean;
+  online: boolean;
 }
 
 export interface Qr {
@@ -38,6 +39,10 @@ export interface AppView {
   error: string | null;
   pairing: PairingView | null;
   defaultName: string;
+  sendEnabled: boolean;
+  receiveEnabled: boolean;
+  paused: boolean;
+  autostart: boolean;
 }
 
 export const CONNECTION_LABEL: Record<Connection, string> = {

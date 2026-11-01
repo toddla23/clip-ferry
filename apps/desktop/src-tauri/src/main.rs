@@ -56,9 +56,43 @@ async fn set_relay_url(shell: State<'_, Arc<Shell>>, url: String) -> Result<AppV
     shell.set_relay_url(&url)
 }
 
+#[tauri::command]
+async fn rename_device(shell: State<'_, Arc<Shell>>, name: String) -> Result<AppView, String> {
+    shell.rename_device(&name).await
+}
+
+#[tauri::command]
+async fn remove_device(shell: State<'_, Arc<Shell>>, id: String) -> Result<AppView, String> {
+    shell.remove_device(&id).await
+}
+
+#[tauri::command]
+fn leave_group(shell: State<'_, Arc<Shell>>) -> Result<AppView, String> {
+    shell.leave_group()
+}
+
+#[tauri::command]
+fn set_sync(shell: State<'_, Arc<Shell>>, send: bool, receive: bool) -> Result<AppView, String> {
+    shell.set_sync(send, receive)
+}
+
+#[tauri::command]
+fn set_paused(shell: State<'_, Arc<Shell>>, paused: bool) -> AppView {
+    shell.set_paused(paused)
+}
+
+#[tauri::command]
+fn set_autostart(shell: State<'_, Arc<Shell>>, on: bool) -> Result<AppView, String> {
+    shell.set_autostart(on)
+}
+
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            None,
+        ))
         .invoke_handler(tauri::generate_handler![
             get_view,
             set_relay_url,
@@ -66,7 +100,13 @@ fn main() {
             start_join,
             start_invite,
             decide_invite,
-            close_pairing
+            close_pairing,
+            rename_device,
+            remove_device,
+            leave_group,
+            set_sync,
+            set_paused,
+            set_autostart
         ])
         .on_window_event(|window, event| {
             // 창을 닫아도 트레이에 남는다. 종료는 트레이 메뉴에서.

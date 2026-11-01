@@ -403,6 +403,61 @@ impl ClipFerry {
         self.install_group(dev, group_key, roster)
     }
 
+    /// 그룹에서 나간다: 로스터와 그룹 키(지난 에포크 포함)를 지우고 그룹이 없는 초기화된 기기로 돌아간다.
+    /// 기기 키는 그대로라 같은 기기로 다시 `join`할 수 있다. 제거되었거나 오래 연결되지 않은 기기가
+    /// 다시 페어링할 때 쓴다. 그룹이 없으면 아무 일도 하지 않는다.
+    pub fn leave_group(&self) -> Result<(), Error> {
+        let mut slot = self.device.lock().unwrap();
+        let dev = slot.as_mut().ok_or(Error::NotInitialized)?;
+        let Some(roster) = dev.state.roster.as_ref() else {
+            return Ok(());
+        };
+        let mut epochs: Vec<u64> = dev.state.retired.iter().map(|r| r.epoch).collect();
+        epochs.push(roster.epoch);
+
+        let mut state = dev.state.clone();
+        state.roster = None;
+        state.retired.clear();
+        state.status = 0;
+        state.last_contact_ms = 0;
+        // 상태를 먼저 적는다. 키 삭제가 일부 실패해도 그룹에서는 확실히 나온 상태가 된다.
+        store::write_state(&self.state_path(), &dev.state_key, &state)?;
+        for epoch in epochs {
+            let _ = self.secrets.delete(&group_key_name(epoch));
+        }
+        dev.state = state;
+        dev.group_key = None;
+        dev.retired_keys.clear();
+        dev.removed = false;
+        dev.last_contact_ms = now_ms();
+        dev.persisted_contact_ms = 0;
+        dev.sync_receiver();
+        Ok(())
+    }
+
+    /// 현재 에포크 채널에 붙어 있는 기기 목록(`Presence`의 태그를 기기로 바꾼다). 이 기기는 항상 포함한다.
+    pub fn online_devices(&self, online_tags: &[Vec<u8>]) -> Vec<DeviceId> {
+        let slot = self.device.lock().unwrap();
+        let Some(dev) = slot.as_ref() else {
+            return Vec::new();
+        };
+        let (Some(roster), Some(key)) = (&dev.state.roster, &dev.group_key) else {
+            return Vec::new();
+        };
+        let me = dev.keys.device_id();
+        roster
+            .members
+            .iter()
+            .filter_map(|m| DeviceId(m.device_id.as_slice().try_into().ok()?).into())
+            .filter(|id: &DeviceId| {
+                *id == me
+                    || online_tags
+                        .iter()
+                        .any(|t| t.as_slice() == key.device_tag(roster.epoch, id).0.as_slice())
+            })
+            .collect()
+    }
+
     /// 그룹 키와 로스터를 저장하고 현재 그룹으로 삼는다. 저장에 실패하면 비밀도 되돌린다.
     fn install_group(
         &self,

@@ -3,12 +3,15 @@
 use tauri::image::Image;
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+use tauri::Wry;
 use tauri::{AppHandle, Manager};
 
 use crate::view::{AppView, Connection, Health, Stage};
 
 const TRAY_ID: &str = "main";
 const SIZE: u32 = 32;
+const PAUSE_LABEL: &str = "일시정지";
+const RESUME_LABEL: &str = "재개";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tone {
@@ -19,6 +22,10 @@ pub enum Tone {
 }
 
 pub fn tone(view: &AppView) -> Tone {
+    // 일시정지 중이면 연결 상태와 상관없이 회색이다 (문제가 있으면 문제가 우선).
+    if view.paused && view.stage == Stage::Ready && view.health == Health::Active {
+        return Tone::Off;
+    }
     // 아직 그룹이 없다 (첫 실행 마법사 중)
     if view.stage == Stage::Setup {
         return Tone::Off;
@@ -64,6 +71,9 @@ fn icon(tone: Tone) -> Image<'static> {
     Image::new_owned(circle_rgba(tone), SIZE, SIZE)
 }
 
+/// 트레이의 일시정지/재개 메뉴 항목. 상태가 바뀔 때 글자를 바꾸려고 쥐고 있다.
+struct PauseItem(MenuItem<Wry>);
+
 pub fn show_main_window(app: &AppHandle) {
     if let Some(w) = app.get_webview_window("main") {
         let _ = w.show();
@@ -74,8 +84,10 @@ pub fn show_main_window(app: &AppHandle) {
 
 pub fn build(app: &AppHandle) -> tauri::Result<()> {
     let open = MenuItem::with_id(app, "open", "열기", true, None::<&str>)?;
+    let pause = MenuItem::with_id(app, "pause", PAUSE_LABEL, true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "종료", true, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&open, &quit])?;
+    let menu = Menu::with_items(app, &[&open, &pause, &quit])?;
+    app.manage(PauseItem(pause));
 
     TrayIconBuilder::with_id(TRAY_ID)
         .icon(icon(Tone::Busy))
@@ -84,6 +96,12 @@ pub fn build(app: &AppHandle) -> tauri::Result<()> {
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| match event.id().as_ref() {
             "open" => show_main_window(app),
+            "pause" => {
+                // 셸이 만들어지기 전에 눌릴 수 있다.
+                if let Some(shell) = app.try_state::<std::sync::Arc<crate::shell::Shell>>() {
+                    shell.toggle_pause();
+                }
+            }
             "quit" => app.exit(0),
             _ => {}
         })
@@ -108,11 +126,24 @@ pub fn update(app: &AppHandle, view: &AppView) {
     };
     let label = if view.stage == Stage::Setup {
         "설정 필요"
-    } else if view.health == Health::Active {
-        view.connection.label()
-    } else {
+    } else if view.health != Health::Active {
         "다시 페어링 필요"
+    } else if view.paused {
+        "일시정지"
+    } else {
+        view.connection.label()
     };
+    if let Some(item) = app.try_state::<PauseItem>() {
+        let _ = item.0.set_text(if view.paused {
+            RESUME_LABEL
+        } else {
+            PAUSE_LABEL
+        });
+        // 그룹이 없거나 다시 페어링해야 할 때는 멈출 것이 없다.
+        let _ = item
+            .0
+            .set_enabled(view.stage == Stage::Ready && view.health == Health::Active);
+    }
     let _ = tray.set_icon(Some(icon(tone(view))));
     let _ = tray.set_tooltip(Some(format!("clip-ferry — {label}")));
 }
@@ -146,6 +177,15 @@ mod tests {
             tone(&view(Connection::Connected, Health::Removed)),
             Tone::Problem
         );
+    }
+
+    #[test]
+    fn paused_is_gray_but_a_problem_still_shows() {
+        let mut v = view(Connection::Connected, Health::Active);
+        v.paused = true;
+        assert_eq!(tone(&v), Tone::Off);
+        v.health = Health::Removed;
+        assert_eq!(tone(&v), Tone::Problem);
     }
 
     #[test]

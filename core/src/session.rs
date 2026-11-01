@@ -9,6 +9,7 @@ use tokio::task::JoinHandle;
 use tokio::time::timeout;
 
 use crate::api::{now_ms, Clip, ClipFerry, Error, GroupHealth, ImageClip, Incoming};
+use crate::crypto::DeviceId;
 use crate::envelope::Source;
 use crate::pb::ErrorCode;
 use crate::transport::{Client, Event, TransportConfig};
@@ -26,6 +27,8 @@ pub trait EventSink: Send + Sync {
     fn on_epoch_changed(&self, _epoch: u64) {}
     /// 그룹과의 관계가 정해졌다. `Removed`/`Stale`이면 다시 페어링해야 한다.
     fn on_group_health(&self, _health: GroupHealth) {}
+    /// 그룹 채널에 붙어 있는 기기가 바뀌었다 (이 기기 포함). 연결이 끊기면 빈 목록이 온다.
+    fn on_presence(&self, _online: Vec<DeviceId>) {}
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -136,6 +139,7 @@ impl ClipFerry {
                     Event::Disconnected => {
                         let _ = connected_tx.send(false);
                         let _ = online_tx.send(0);
+                        sink.on_presence(Vec::new());
                         sink.on_status(ConnectionStatus::Disconnected);
                     }
                     Event::Reconnecting { .. } => sink.on_status(ConnectionStatus::Reconnecting),
@@ -179,6 +183,7 @@ impl ClipFerry {
                         };
                         if subs.first().map(|s| s.epoch) == Some(sub.epoch) {
                             let _ = online_tx.send(p.online_tags.len());
+                            sink.on_presence(app.online_devices(&p.online_tags));
                         } else {
                             // 이전 에포크 채널에 아직 붙어 있는 기기가 있으면 최신 키를 먼저 보내 준다.
                             let fresh: Vec<Vec<u8>> = p
