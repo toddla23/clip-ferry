@@ -288,11 +288,11 @@ enum ErrorCode { ERROR_UNSPECIFIED = 0; BAD_FRAME = 1; TOO_LARGE = 2; RATE_LIMIT
 - 프레임이 `max_frame_bytes`를 넘으면 `TOO_LARGE`(연결 유지). WebSocket 계층은 한도의 2배를 넘으면 연결을 끊는다.
 - 텍스트(`ClipText`)는 1 MiB(UTF-8 바이트)를 넘으면 보내지 않고, 받은 것도 버린다(`TooLarge`). 빈 텍스트는 보내지 않는다.
 - 연결당 속도 제한은 토큰 버킷(초당 프레임 수, 분당 바이트 수). 넘으면 `RATE_LIMITED`(연결 유지).
-- IP당 동시 연결 한도를 넘으면 업그레이드 단계에서 HTTP 429. (리버스 프록시 뒤에서는 프록시 IP로 센다 — F14에서 다룬다.)
+- IP당 동시 연결 한도를 넘으면 업그레이드 단계에서 HTTP 429. (리버스 프록시 뒤에서는 프록시 IP로 센다 — F14b에서 다룬다.)
 - `Presence`는 구독·구독 해지·연결 종료로 채널 구성이 바뀔 때마다 그 채널의 모든 구독자에게 간다.
 - `push`는 F20 전까지 무시되고 `Ack.pushed`는 항상 0.
 - 클라이언트 재연결 백오프는 1s에서 시작해 두 배씩 늘어 최대 60s. 끊긴 동안의 `Publish`는 쌓지 않고 `PublishFailed`로 알린다.
-- `wss://`(TLS) 클라이언트는 F14에서 추가한다. 지금은 `ws://`만 연결된다.
+- `wss://`(TLS) 클라이언트는 `rustls`(ring) + 번들 루트 인증서(webpki-roots)로 지원한다(F14). 서버는 TLS를 직접 하지 않고 앞단(프록시·호스팅)이 종단한다. 실제 TLS 서버와의 접속은 인증서를 받은 뒤 확인한다.
 
 ---
 
