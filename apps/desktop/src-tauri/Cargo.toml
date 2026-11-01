@@ -19,8 +19,12 @@ qrcode = { version = "0.14", default-features = false }
 keyring = { version = "3", features = ["windows-native", "apple-native", "linux-native"] }
 
 tokio = { workspace = true, features = ["time"] }
-# 클립보드 텍스트 읽기·쓰기 (이미지는 F12에서 기능을 추가한다)
-arboard = { version = "3", default-features = false }
+# 클립보드 텍스트·이미지 읽기·쓰기
+arboard = { version = "3", default-features = false, features = ["image-data"] }
+# 이미지 인코딩(PNG)·디코딩(PNG·JPEG·GIF·WebP). 필요한 형식만 켠다.
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
+# 크기 초과 같은 안내를 시스템 알림으로 띄운다.
+tauri-plugin-notification = "2"
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.62", features = [

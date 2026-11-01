@@ -17,6 +17,7 @@ use crate::pairing::{
 };
 use crate::pb;
 use crate::store::{self, SecretStore, StateFileError, StoreError};
+use crate::transfer::{self, Assembler, ImageError};
 
 const KEY_DEVICE: &str = "device_keys";
 const KEY_STATE: &str = "state_key";
@@ -65,6 +66,12 @@ pub enum Error {
     EmptyText,
     #[error("텍스트가 너무 큽니다 (최대 1 MiB)")]
     TextTooLarge,
+    #[error("보낼 이미지가 비어 있습니다")]
+    EmptyImage,
+    #[error("이미지가 너무 큽니다 (최대 20 MiB)")]
+    ImageTooLarge,
+    #[error("지원하지 않는 이미지 형식입니다 (PNG, JPEG, GIF, WebP만 가능)")]
+    UnsupportedImage,
     #[error("로컬 상태 파일을 열 수 없습니다. 손상되었거나 변조되었을 수 있습니다")]
     StateCorrupt,
     #[error("로컬 상태와 비밀 저장소가 서로 맞지 않습니다. 한쪽만 남아 있습니다")]
@@ -164,10 +171,25 @@ pub struct Clip {
     pub created_at_ms: u64,
 }
 
+/// 받은 이미지. 크기와 해시를 확인한 원본 바이트다(디코딩은 셸이 한다).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImageClip {
+    pub from: DeviceId,
+    pub from_name: String,
+    pub mime: String,
+    pub bytes: Vec<u8>,
+    /// 보낸 쪽이 알린 크기. 믿지 말고 디코딩해서 확인한다.
+    pub width: u32,
+    pub height: u32,
+    pub created_at_ms: u64,
+}
+
 /// `handle_deliver`가 받은 메시지로 한 일.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Incoming {
     Clip(Clip),
+    /// 이미지가 다 모였다.
+    Image(ImageClip),
     /// 로스터가 바뀌었다 (기기 목록을 다시 그린다).
     DevicesChanged,
     /// 키가 회전되어 새 에포크로 넘어갔다 (새 채널을 구독해야 한다).
@@ -192,6 +214,8 @@ struct Device {
     /// `state.bin`에 마지막으로 적은 `last_contact_ms`
     persisted_contact_ms: u64,
     removed: bool,
+    /// 받는 중인 이미지 (메모리에만 둔다)
+    assembler: Assembler,
 }
 
 impl Device {
@@ -308,6 +332,7 @@ impl ClipFerry {
                     last_contact_ms: if persisted == 0 { now_ms() } else { persisted },
                     persisted_contact_ms: persisted,
                     removed,
+                    assembler: Assembler::default(),
                 };
                 dev.sync_receiver();
                 Some(dev)
@@ -362,6 +387,7 @@ impl ClipFerry {
             last_contact_ms: now_ms(),
             persisted_contact_ms: 0,
             removed: false,
+            assembler: Assembler::default(),
         });
         Ok(())
     }
@@ -542,6 +568,45 @@ impl ClipFerry {
         })
     }
 
+    /// 이미지를 서명·봉인한다. 돌려받은 메시지를 **순서대로** `channel_id`에 게시한다
+    /// (첫 메시지가 `ImageStart`, 나머지가 청크).
+    pub fn seal_image(
+        &self,
+        bytes: &[u8],
+        mime: &str,
+        width: u32,
+        height: u32,
+        now_ms: u64,
+    ) -> Result<Vec<SealedMessage>, Error> {
+        let image = transfer::split(bytes, mime, width, height).map_err(|e| match e {
+            ImageError::Empty => Error::EmptyImage,
+            ImageError::TooLarge => Error::ImageTooLarge,
+            ImageError::UnsupportedMime => Error::UnsupportedImage,
+        })?;
+        let slot = self.device.lock().unwrap();
+        let dev = slot.as_ref().ok_or(Error::NotInitialized)?;
+        if dev.removed {
+            return Err(Error::Removed);
+        }
+        let ctx = dev.send_context()?;
+        let kinds = std::iter::once(pb::payload_body::Kind::ImageStart(image.start)).chain(
+            image
+                .chunks
+                .into_iter()
+                .map(pb::payload_body::Kind::ImageChunk),
+        );
+        kinds
+            .map(|kind| {
+                let out = envelope::seal_message(&dev.keys, &ctx, kind, now_ms)?;
+                Ok(SealedMessage {
+                    channel_id: ctx.channel_id().clone(),
+                    msg_id: out.msg_id,
+                    bytes: out.bytes,
+                })
+            })
+            .collect()
+    }
+
     /// 릴레이에서 받은 페이로드를 검증하고 처리한다.
     /// 검증에 실패한 메시지는 `Err(이유)`로 돌려주며 이유별 카운터가 올라간다.
     pub fn handle_deliver(
@@ -591,16 +656,35 @@ impl ClipFerry {
             self.touch(dev, now_ms);
         }
 
+        let name_of = |dev: &Device| {
+            dev.state
+                .roster
+                .iter()
+                .flat_map(|r| &r.members)
+                .find(|m| m.device_id == got.sender.0)
+                .map(|m| m.name.clone())
+                .unwrap_or_default()
+        };
         match got.kind {
+            Kind::ImageStart(s) => match dev.assembler.start(got.sender, &s, now_ms) {
+                Ok(()) => Ok(Incoming::Nothing),
+                Err(_) => Err(Self::drop_image(dev)),
+            },
+            Kind::ImageChunk(c) => match dev.assembler.chunk(got.sender, &c, now_ms) {
+                Ok(None) => Ok(Incoming::Nothing),
+                Ok(Some(image)) => Ok(Incoming::Image(ImageClip {
+                    from: got.sender,
+                    from_name: name_of(dev),
+                    mime: image.mime,
+                    bytes: image.bytes,
+                    width: image.width,
+                    height: image.height,
+                    created_at_ms: got.created_at_ms,
+                })),
+                Err(_) => Err(Self::drop_image(dev)),
+            },
             Kind::Text(t) => {
-                let from_name = dev
-                    .state
-                    .roster
-                    .iter()
-                    .flat_map(|r| &r.members)
-                    .find(|m| m.device_id == got.sender.0)
-                    .map(|m| m.name.clone())
-                    .unwrap_or_default();
+                let from_name = name_of(dev);
                 Ok(Incoming::Clip(Clip {
                     from: got.sender,
                     from_name,
@@ -629,6 +713,14 @@ impl ClipFerry {
             }) => Ok(self.handle_query(dev, got.sender, got.epoch, now_ms)),
             _ => Ok(Incoming::Nothing),
         }
+    }
+
+    /// 이미지 조립에 실패한 메시지를 세고 이유를 돌려준다.
+    fn drop_image(dev: &mut Device) -> DropReason {
+        if let Some(receiver) = dev.receiver.as_mut() {
+            receiver.count_drop(DropReason::BadImage);
+        }
+        DropReason::BadImage
     }
 
     /// 받은 `RosterUpdate`를 채택할지 정한다. 채택하면 저장하고 `true`.
@@ -734,6 +826,8 @@ fn load_group_key(secrets: &dyn SecretStore, epoch: u64) -> Result<GroupKey, Err
 mod epochs;
 #[cfg(test)]
 mod group_tests;
+#[cfg(test)]
+mod image_tests;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]

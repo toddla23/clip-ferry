@@ -2,6 +2,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod clipsync;
+mod imgcodec;
 mod secrets;
 mod settings;
 mod shell;
@@ -57,6 +58,7 @@ async fn set_relay_url(shell: State<'_, Arc<Shell>>, url: String) -> Result<AppV
 
 fn main() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_notification::init())
         .invoke_handler(tauri::generate_handler![
             get_view,
             set_relay_url,

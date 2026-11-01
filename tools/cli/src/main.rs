@@ -67,7 +67,12 @@ enum Command {
         /// 보낼 텍스트
         text: Option<String>,
     },
-    /// 다른 기기가 보낸 텍스트를 받아 한 건씩 출력한다
+    /// 이미지 파일(PNG·JPEG·GIF·WebP, 최대 20 MiB)을 그룹의 다른 기기들에게 보낸다 (디버그용)
+    SendImage {
+        /// 보낼 이미지 파일
+        file: PathBuf,
+    },
+    /// 다른 기기가 보낸 텍스트를 받아 한 건씩 출력한다 (이미지는 ./received/ 에 저장)
     Listen,
     /// 새 기기를 초대한다: 코드와 QR을 보여 주고 참여 요청을 기다린다
     Invite,
@@ -213,6 +218,10 @@ async fn main() -> anyhow::Result<()> {
         Some(Command::Send { text }) => {
             let app = std::sync::Arc::new(open_profile(&args)?);
             text::send(app, &args.relay_url(), text.clone()).await
+        }
+        Some(Command::SendImage { file }) => {
+            let app = std::sync::Arc::new(open_profile(&args)?);
+            text::send_image(app, &args.relay_url(), file).await
         }
         Some(Command::Listen) => {
             let app = std::sync::Arc::new(open_profile(&args)?);

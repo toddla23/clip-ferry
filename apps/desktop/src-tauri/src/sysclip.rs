@@ -2,7 +2,7 @@
 
 use std::sync::Mutex;
 
-use crate::clipsync::Clipboard;
+use crate::clipsync::{Clipboard, Content, Image};
 
 pub struct SystemClipboard {
     // Linux(X11)에서는 쓴 내용을 가진 인스턴스가 살아 있어야 해서 하나를 계속 쥔다.
@@ -34,13 +34,35 @@ impl Clipboard for SystemClipboard {
         platform::is_sensitive()
     }
 
-    fn read_text(&self) -> Option<String> {
-        self.with(|c| c.get_text().ok()).flatten()
+    /// 텍스트가 있으면 텍스트, 없으면 이미지를 읽는다.
+    fn read(&self) -> Option<Content> {
+        self.with(|c| {
+            if let Some(text) = c.get_text().ok().filter(|t| !t.is_empty()) {
+                return Some(Content::Text(text));
+            }
+            c.get_image().ok().map(|img| {
+                Content::Image(Image {
+                    width: img.width,
+                    height: img.height,
+                    rgba: img.bytes.into_owned(),
+                })
+            })
+        })
+        .flatten()
     }
 
-    fn write_text(&self, text: &str) -> Result<(), String> {
-        self.with(|c| c.set_text(text.to_string()).map_err(|e| e.to_string()))
-            .unwrap_or_else(|| Err("클립보드를 열 수 없습니다".to_string()))
+    fn write(&self, content: &Content) -> Result<(), String> {
+        self.with(|c| match content {
+            Content::Text(t) => c.set_text(t.clone()).map_err(|e| e.to_string()),
+            Content::Image(i) => c
+                .set_image(arboard::ImageData {
+                    width: i.width,
+                    height: i.height,
+                    bytes: std::borrow::Cow::Borrowed(&i.rgba),
+                })
+                .map_err(|e| e.to_string()),
+        })
+        .unwrap_or_else(|| Err("클립보드를 열 수 없습니다".to_string()))
     }
 }
 
@@ -136,11 +158,15 @@ mod platform {
     use std::hash::{Hash, Hasher};
 
     use super::SystemClipboard;
-    use crate::clipsync::Clipboard;
+    use crate::clipsync::{Clipboard, Content};
 
     pub fn change_token(clip: &SystemClipboard) -> u64 {
         let mut h = DefaultHasher::new();
-        clip.read_text().hash(&mut h);
+        match clip.read() {
+            Some(Content::Text(t)) => t.hash(&mut h),
+            Some(Content::Image(i)) => i.rgba.hash(&mut h),
+            None => 0u8.hash(&mut h),
+        }
         h.finish()
     }
 
@@ -190,7 +216,7 @@ mod tests {
 
         copy_with_marker("plain", None);
         assert!(!clip.is_sensitive());
-        assert_eq!(clip.read_text().as_deref(), Some("plain"));
+        assert!(clip.read() == Some(Content::Text("plain".into())));
 
         let before = clip.change_token();
         copy_with_marker(
@@ -209,7 +235,38 @@ mod tests {
         copy_with_marker("ok", Some((w!("CanIncludeInClipboardHistory"), Some(1))));
         assert!(!clip.is_sensitive());
 
-        clip.write_text("written").unwrap();
-        assert_eq!(clip.read_text().as_deref(), Some("written"));
+        clip.write(&Content::Text("written".into())).unwrap();
+        assert!(clip.read() == Some(Content::Text("written".into())));
+    }
+
+    /// 이미지를 쓰고 다시 읽으면 크기와 불투명 픽셀이 그대로 돌아온다. 실제 클립보드를 덮어쓰므로 `--ignored`.
+    #[test]
+    #[ignore = "실제 클립보드를 덮어쓴다"]
+    fn image_round_trips_through_the_clipboard() {
+        let clip = SystemClipboard::new();
+        let (w, h) = (64usize, 48usize);
+        let rgba: Vec<u8> = (0..w * h)
+            .flat_map(|i| {
+                [
+                    (i % 251) as u8,
+                    (i * 3 % 241) as u8,
+                    (i * 7 % 239) as u8,
+                    255,
+                ]
+            })
+            .collect();
+        let before = clip.change_token();
+        clip.write(&Content::Image(Image {
+            width: w,
+            height: h,
+            rgba: rgba.clone(),
+        }))
+        .unwrap();
+        assert_ne!(clip.change_token(), before);
+        let Some(Content::Image(got)) = clip.read() else {
+            panic!("이미지를 읽지 못함");
+        };
+        assert_eq!((got.width, got.height), (w, h));
+        assert!(got.rgba == rgba, "픽셀이 달라짐");
     }
 }

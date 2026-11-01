@@ -5,14 +5,16 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 
-use clip_ferry_core::api::{Clip, ClipFerry, Config, Error, GroupHealth};
+use clip_ferry_core::api::{Clip, ClipFerry, Config, Error, GroupHealth, ImageClip};
 use clip_ferry_core::pair_flow::{self, InviteFlow, InviteUpdate, JoinFlow, JoinUpdate};
 use clip_ferry_core::session::{ConnectionStatus, EventSink, Session};
 use clip_ferry_core::store::SecretStore;
+use clip_ferry_core::transfer::MAX_IMAGE_BYTES;
 use clip_ferry_core::transport::TransportConfig;
 use tauri::{AppHandle, Emitter};
 
-use crate::clipsync::ClipSync;
+use crate::clipsync::{ClipSync, Content};
+use crate::imgcodec;
 use crate::settings::{self, Settings};
 use crate::sysclip::SystemClipboard;
 use crate::tray;
@@ -58,7 +60,33 @@ impl EventSink for Sink {
     fn on_clip(&self, clip: Clip) {
         // 받은 텍스트는 클립보드에만 쓴다. 디스크나 화면에는 남기지 않는다.
         if let Some(shell) = self.0.upgrade() {
-            shell.clip.write_received(&clip.text);
+            if let Err(reason) = shell.clip.write_received(&Content::Text(clip.text)) {
+                shell.notify(&format!(
+                    "{}에서 받은 텍스트를 클립보드에 쓰지 못했습니다 ({reason})",
+                    clip.from_name
+                ));
+            }
+        }
+    }
+
+    fn on_image(&self, image: ImageClip) {
+        // 디코딩은 무거우므로 따로 돌린다. 받은 이미지를 열거나 쓰지 못하면 알림으로 알린다.
+        if let Some(shell) = self.0.upgrade() {
+            tauri::async_runtime::spawn_blocking(move || {
+                let from = &image.from_name;
+                match imgcodec::decode(&image.bytes) {
+                    Err(_) => shell.notify(&format!(
+                        "{from}에서 받은 이미지를 열 수 없어 버렸습니다 (깨졌거나 너무 큰 이미지)"
+                    )),
+                    Ok(img) => {
+                        if let Err(reason) = shell.clip.write_received(&Content::Image(img)) {
+                            shell.notify(&format!(
+                                "{from}에서 받은 이미지를 클립보드에 쓰지 못했습니다 ({reason})"
+                            ));
+                        }
+                    }
+                }
+            });
         }
     }
 
@@ -142,11 +170,11 @@ impl Shell {
         tauri::async_runtime::spawn(clip.watch(
             move || on.upgrade().is_some_and(|s| s.has_session()),
             !self.sync_sensitive,
-            move |text| {
+            move |content| {
                 let shell = send.upgrade();
                 async move {
                     match shell {
-                        Some(shell) => shell.send_clip(&text).await,
+                        Some(shell) => shell.send_clip(content).await,
                         None => false,
                     }
                 }
@@ -158,13 +186,47 @@ impl Shell {
         self.inner.lock().unwrap().session.is_some()
     }
 
-    /// 복사한 텍스트를 그룹에 보낸다. 보냈으면 `true`.
-    async fn send_clip(&self, text: &str) -> bool {
+    /// 복사한 내용을 그룹에 보낸다. 다시 시도할 필요가 없으면(보냈거나, 일부러 안 보냈으면) `true`.
+    async fn send_clip(&self, content: Content) -> bool {
         let session = self.inner.lock().unwrap().session.clone();
-        match session {
-            Some(s) => s.send_text(text).await.is_ok(),
-            None => false,
+        let Some(session) = session else {
+            return false;
+        };
+        match content {
+            Content::Text(text) => session.send_text(&text).await.is_ok(),
+            Content::Image(img) => {
+                let (width, height) = (img.width as u32, img.height as u32);
+                // PNG 인코딩은 무거우므로 따로 돌린다.
+                let png =
+                    tauri::async_runtime::spawn_blocking(move || imgcodec::encode_png(&img)).await;
+                let Ok(Ok(png)) = png else {
+                    return false;
+                };
+                if png.len() > MAX_IMAGE_BYTES {
+                    self.notify(&format!(
+                        "복사한 이미지가 {:.1} MiB라 20 MiB를 넘어 보내지 않았습니다",
+                        png.len() as f64 / (1024.0 * 1024.0)
+                    ));
+                    return true;
+                }
+                session
+                    .send_image(&png, "image/png", width, height)
+                    .await
+                    .is_ok()
+            }
         }
+    }
+
+    /// 시스템 알림을 띄운다. 실패해도 무시한다.
+    fn notify(&self, body: &str) {
+        use tauri_plugin_notification::NotificationExt;
+        let _ = self
+            .handle
+            .notification()
+            .builder()
+            .title("clip-ferry")
+            .body(body)
+            .show();
     }
 
     /// 릴레이 세션을 (다시) 시작한다. tokio 런타임 안에서 불러야 한다.

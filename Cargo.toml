@@ -16,3 +16,9 @@ tokio-tungstenite = "0.24"
 futures-util = { version = "0.3", default-features = false, features = ["sink"] }
 tracing = "0.1"
 tracing-subscriber = "0.3"
+
+# 개발(debug) 빌드에서도 외부 의존성만 최적화한다 (우리 코드는 그대로 디버그 가능).
+# 안 하면 큰 이미지의 PNG 인코딩·디코딩이 수십 배 느려서(46 MB 그림이 12초), 클립보드 쓰기가
+# 시간 초과로 실패한다.
+[profile.dev.package."*"]
+opt-level = 3
