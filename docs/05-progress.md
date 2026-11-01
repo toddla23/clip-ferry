@@ -22,9 +22,10 @@
 | F11 | 텍스트 자동 동기화 | F10 | 완료 | Windows 직접 확인, 세 OS CI 통과(PR #12). 민감 표시 복사는 기본 동기화(설정 `sync_sensitive`, 사용자 결정) 후속 PR. macOS 실행은 미확인 |
 | F12 | 이미지 동기화 | F11 | 확인대기 | 로컬·실제 앱+CLI 자동 검증 통과(Windows). 직접 확인, macOS 실행, 세 OS CI는 확인 필요 |
 | F13 | 기기 관리 UI와 설정 | F12 | 완료 | Windows 직접 확인(온라인 표시·이름 변경·제거·일시정지·다시 페어링), 세 OS CI 통과, main 머지. 재부팅 후 자동 시작·macOS 실행은 미확인. 플랫폼 표시는 프로토콜 변경이 필요해 제외 |
-| F14 | 릴레이 배포 | F13 | 진행중 | 1단계: Pi 5 + Docker + Tailscale(ws://, D-014). 클라우드·인증서는 이후 |
+| F14 | 릴레이 배포 (Pi + Tailscale) | F13 | 확인대기 | 사용자 시험 통과(Pi 5 arm64 빌드·기동, PC에서 Tailscale 접속, 텍스트·이미지 동기화). 로컬 fmt·clippy·test 통과. 세 OS CI는 확인 필요. macOS 미확인 |
+| F14b | 릴레이 공개 배포 (`wss://`) | F14 | 대기 | 인증서·TLS 종단·프록시 IP 처리·기본 릴레이 주소·클라우드 이전 결정(O-03, O-04) |
 | **M3** | **Android** | | | |
-| F15 | Android 셸 + 코어 바인딩 | F14 | 대기 | |
+| F15 | Android 셸 + 코어 바인딩 | F14b | 대기 | |
 | F16 | Android 페어링 | F15 | 대기 | |
 | F17 | Android 수신 → 클립보드 | F16 | 대기 | |
 | F18 | Android 타일 · 알림 버튼 | F17 | 대기 | |
@@ -49,6 +50,7 @@
 
 새 항목을 위에 추가한다. 형식: `YYYY-MM-DD F00 — 한 줄`
 
+- 2026-11-02 F14 — 클라이언트 `wss://`(rustls), `deploy/`(Dockerfile·compose·README), D-014(Pi + Tailscale 먼저), Pi 5에서 사용자 시험 통과, 인증서·`wss://` 종단·프록시 IP는 F14b로 분리, F15 선행을 F14b로, 확인대기
 - 2026-11-01 F13 — 사용자 직접 확인(Windows 실제 앱+CLI), 완료 처리. 재부팅 후 자동 시작·macOS 미확인, CLI에 그룹 나가기 명령 없음(제거된 프로필은 지우고 init부터)은 알려진 사항
 - 2026-11-01 F12 — core/transfer(청크 분할·조립·해시·60초 타임아웃·기기당 동시 2개·머리말 판별), `seal_image`/`Session::send_image`(속도 제한 재시도)/`EventSink::on_image`/`DropReason::BadImage`, CLI `send-image`·`listen` 이미지 저장(./received), 데스크톱 이미지 감지·쓰기(arboard)·PNG 인코딩/안전한 디코딩(image)·20 MiB 초과 알림(notification 플러그인)·쓴 직후 변경 무시, 코어 테스트 +25·릴레이 통합 4·데스크톱 +11, 실제 앱+CLI 14항목, 확인대기
 - 2026-10-31 F11 정책 변경 — 모바일↔데스크톱 비밀번호 옮기기를 위해 민감 표시가 붙은 복사도 기본 동기화. 설정 `sync_sensitive`(기본 true, 끄면 기존처럼 읽지도 보내지도 않음), 설정 없던 파일은 기본값, 테스트 +2, 실제 앱+CLI 재검증, 문서(02·04) 반영, F11 완료
