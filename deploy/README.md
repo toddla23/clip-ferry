@@ -53,11 +53,45 @@ git pull && docker compose -f deploy/compose.yml up -d --build   # 업데이트
 docker compose -f deploy/compose.yml down                        # 중지
 ```
 
-## 나중에: 인증서와 `wss://`
+## `wss://` 켜기 (Tailscale 인증서, 무료·도메인 불필요)
 
-- **Tailscale 인증서**: `tailscale cert <기기>.<tailnet>.ts.net`으로 발급받아 TLS 종단(예: `tailscale serve`)을 앞에 둔다. 이 경우 릴레이는 프록시 뒤에 있어 클라이언트 IP가 모두 프록시 주소로 보인다 → IP당 연결 제한이 공유된다(구현 예정, 03-protocol 5절 구현 메모).
-- **클라우드**(Fly.io 등): 호스팅이 TLS를 종단한다. 이 `Dockerfile`을 그대로 쓴다.
-- 클라이언트(앱·CLI)는 이미 `wss://`를 지원한다(rustls, 번들 루트 인증서).
+`tailscale serve`가 인증서(Let's Encrypt) 발급·갱신과 TLS 종단을 맡고, 릴레이는 같은 Pi의 `127.0.0.1`에서 평문으로 받는다. 접속 주소는 `wss://<기기>.<tailnet>.ts.net` 형태가 된다.
+
+1. 한 번만: Tailscale 관리 콘솔 → DNS(https://login.tailscale.com/admin/dns)에서 `MagicDNS`가 켜져 있는지 보고 `HTTPS Certificates`를 `Enable HTTPS`로 켠다. 기기 이름이 공개 인증서 기록에 남는다는 안내에 동의해야 한다.
+2. 릴레이를 `127.0.0.1`에만 열고 프록시 헤더를 신뢰하게 한다 (Tailscale IP로 직접 열 필요가 없어진다).
+
+   ```bash
+   printf 'CF_BIND=127.0.0.1\nCF_TRUST_PROXY=true\n' > deploy/.env
+   docker compose -f deploy/compose.yml up -d --build
+   ```
+
+3. `tailscale serve`로 HTTPS 443을 릴레이에 연결한다 (재부팅 후에도 유지된다).
+
+   ```bash
+   sudo tailscale serve --bg --https=443 http://127.0.0.1:8787
+   tailscale serve status        # 접속 주소가 나온다
+   ```
+
+4. 확인한다 (PC에서). 인증서 오류 없이 `ok`가 나와야 한다.
+
+   ```powershell
+   curl.exe -v https://<기기>.<tailnet>.ts.net/healthz
+   ```
+
+5. 앱·CLI 릴레이 주소를 `wss://<기기>.<tailnet>.ts.net`으로 바꾼다 (포트 없음).
+
+끄려면 `sudo tailscale serve --https=443 off`.
+
+### 프록시 뒤에서의 클라이언트 IP
+
+- `tailscale serve`는 요청에 `X-Forwarded-For: <기기의 Tailscale IP>`를 붙인다. `CF_TRUST_PROXY=true`이면 릴레이가 이 값으로 IP당 연결 제한(`CF_RELAY_MAX_CONNS_PER_IP`)을 기기별로 센다. 꺼져 있으면 모든 기기가 `127.0.0.1` 하나로 세어진다.
+- 헤더는 **루프백·사설 주소에서 직접 온 연결**에서만 믿고, 값이 여러 개면 가장 오른쪽을 쓴다(인터넷에서 온 연결이 위조해도 소용없다). 그래서 포트를 `127.0.0.1`에만 열어 둬야 한다. LAN이나 Tailscale IP로 같이 열면서 켜지 않는다.
+- `tailscale serve`는 `Tailscale-User-Login`(계정 이메일), `Tailscale-User-Name`, `Tailscale-User-Profile-Pic` 헤더도 붙인다. 릴레이는 헤더를 읽지도 로그에 남기지도 않는다. 앞으로도 헤더를 로그에 쓰지 않는다.
+
+## 클라우드로 옮길 때
+
+- 호스팅(Fly.io 등)이 TLS를 종단하면 이 `Dockerfile`을 그대로 쓴다. 호스팅의 프록시가 어떤 헤더로 클라이언트 IP를 주는지 확인하고 `CF_TRUST_PROXY`를 정한다(현재는 `X-Forwarded-For`만 지원).
+- 도메인·번들 ID·호스팅 결정은 `docs/06-decisions.md`의 O-03, O-04.
 
 ## 환경 변수
 
@@ -69,3 +103,4 @@ docker compose -f deploy/compose.yml down                        # 중지
 | `CF_RELAY_MAX_FRAMES_PER_SEC` | 50 | 연결당 초당 프레임 |
 | `CF_RELAY_MAX_BYTES_PER_MIN` | 64 MiB | 연결당 분당 바이트 |
 | `CF_RELAY_MAX_CONNS_PER_IP` | 32 | IP당 동시 연결 |
+| `CF_RELAY_TRUST_PROXY` | false | 프록시 뒤에서 `X-Forwarded-For`로 IP를 센다 (compose는 `CF_TRUST_PROXY`) |

@@ -7,6 +7,7 @@ mod conn;
 mod hub;
 mod limits;
 mod metrics;
+mod proxy;
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -14,7 +15,7 @@ use std::time::Duration;
 
 use axum::extract::ws::WebSocketUpgrade;
 use axum::extract::{ConnectInfo, State};
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::Router;
@@ -38,6 +39,8 @@ pub struct Config {
     pub max_frames_per_sec: u32,
     pub max_bytes_per_min: u64,
     pub max_conns_per_ip: usize,
+    /// 리버스 프록시 뒤에 있으면 켠다. 루프백·사설 주소에서 직접 온 연결에 한해 `X-Forwarded-For`로 IP당 제한을 센다.
+    pub trust_proxy: bool,
     /// 이 시간 동안 클라이언트에서 아무것도 오지 않으면 연결을 닫는다.
     pub idle_timeout: Duration,
 }
@@ -50,6 +53,7 @@ impl Default for Config {
             max_frames_per_sec: 50,
             max_bytes_per_min: 64 * 1024 * 1024,
             max_conns_per_ip: 32,
+            trust_proxy: false,
             idle_timeout: Duration::from_secs(60),
         }
     }
@@ -127,8 +131,10 @@ async fn ws_handler(
     ws: WebSocketUpgrade,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     State(shared): State<Arc<Shared>>,
+    headers: HeaderMap,
 ) -> Response {
-    let Some(guard) = IpGuard::acquire(&shared, peer.ip()) else {
+    let ip = proxy::client_ip(peer.ip(), &headers, shared.config.trust_proxy);
+    let Some(guard) = IpGuard::acquire(&shared, ip) else {
         shared.metrics.connections_rejected();
         return StatusCode::TOO_MANY_REQUESTS.into_response();
     };

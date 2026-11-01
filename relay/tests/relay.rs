@@ -309,6 +309,56 @@ async fn too_many_connections_per_ip_is_refused() {
     relay.shutdown().await;
 }
 
+type Ws =
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
+
+/// `X-Forwarded-For`를 붙여 연결을 시도한다 (프록시 뒤 클라이언트 흉내). 거절되면 `None`.
+async fn connect_as(relay: &RelayHandle, forwarded_for: &str) -> Option<Ws> {
+    let mut req = url(relay).into_client_request().unwrap();
+    req.headers_mut().insert(
+        "Sec-WebSocket-Protocol",
+        HeaderValue::from_static(SUBPROTOCOL),
+    );
+    req.headers_mut().insert(
+        "X-Forwarded-For",
+        HeaderValue::from_str(forwarded_for).unwrap(),
+    );
+    tokio_tungstenite::connect_async(req)
+        .await
+        .ok()
+        .map(|(ws, _)| ws)
+}
+
+#[tokio::test]
+async fn behind_a_trusted_proxy_each_client_ip_is_limited_separately() {
+    let relay = start(Config {
+        max_conns_per_ip: 1,
+        trust_proxy: true,
+        ..Config::default()
+    })
+    .await;
+    let _a = connect_as(&relay, "100.64.0.1").await.expect("첫 연결");
+    // 다른 기기는 같은 프록시(127.0.0.1)를 거쳐도 따로 센다.
+    let _b = connect_as(&relay, "100.64.0.2").await.expect("다른 기기");
+    // 같은 기기가 한도를 넘으면 거절. 앞에 가짜 주소를 붙여도 가장 오른쪽 값으로 센다.
+    assert!(connect_as(&relay, "100.64.0.1").await.is_none());
+    assert!(connect_as(&relay, "9.9.9.9, 100.64.0.1").await.is_none());
+    relay.shutdown().await;
+}
+
+#[tokio::test]
+async fn without_trust_proxy_the_header_is_ignored() {
+    let relay = start(Config {
+        max_conns_per_ip: 1,
+        ..Config::default()
+    })
+    .await;
+    let _a = connect_as(&relay, "100.64.0.1").await.expect("첫 연결");
+    // 헤더를 바꿔도 직접 연결 주소(127.0.0.1)로 세므로 한도에 걸린다.
+    assert!(connect_as(&relay, "100.64.0.2").await.is_none());
+    relay.shutdown().await;
+}
+
 #[tokio::test]
 async fn missing_subprotocol_gets_unsupported_version() {
     let relay = start(Config::default()).await;
