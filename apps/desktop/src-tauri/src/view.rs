@@ -72,6 +72,8 @@ pub struct DeviceView {
     pub id: String,
     pub name: String,
     pub is_self: bool,
+    /// 지금 그룹 채널에 붙어 있다 (릴레이 Presence). 이 기기는 연결돼 있으면 항상 참.
+    pub online: bool,
 }
 
 /// QR 코드. `path`는 어두운 칸마다 1×1 사각형을 그리는 SVG 경로이고, 그림 크기는 `width`×`width`.
@@ -161,6 +163,13 @@ pub struct AppView {
     pub relay_url: String,
     pub error: Option<String>,
     pub pairing: Option<PairingView>,
+    /// 복사한 내용을 보낸다 / 받은 내용을 클립보드에 쓴다 (설정).
+    pub send_enabled: bool,
+    pub receive_enabled: bool,
+    /// 일시정지 중이면 보내지도 받지도 않는다 (앱을 다시 켜면 풀린다).
+    pub paused: bool,
+    /// 로그인할 때 자동으로 시작한다.
+    pub autostart: bool,
     /// 마법사에서 이름 칸에 미리 넣어 줄 값.
     pub default_name: String,
 }
@@ -201,6 +210,7 @@ pub fn build(
                         id: short_id(&d.device_id.0),
                         name: d.name,
                         is_self: d.is_self,
+                        online: false,
                     })
                     .collect(),
                 health: s.health.into(),
@@ -293,6 +303,10 @@ mod tests {
         assert_eq!(json["pairing"]["kind"], "invite");
         assert_eq!(json["pairing"]["phase"], "request");
         assert!(json["devices"][0].get("isSelf").is_some());
+        assert_eq!(json["devices"][0]["online"], false);
+        for key in ["sendEnabled", "receiveEnabled", "paused", "autostart"] {
+            assert!(json.get(key).is_some(), "{key}");
+        }
         assert!(json.get("deviceName").is_some() && json.get("relayUrl").is_some());
         assert!(json.get("defaultName").is_some());
     }

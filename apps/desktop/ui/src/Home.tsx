@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import Devices from "./Devices";
 import { CONNECTION_LABEL, type AppView } from "./types";
 
 export default function Home({
@@ -12,20 +13,12 @@ export default function Home({
   const [relay, setRelay] = useState(view.relayUrl);
   const [message, setMessage] = useState<string | null>(null);
 
-  async function saveRelay() {
+  // 명령을 부르고 결과 상태를 반영한다. 실패하면 메시지를 보여 준다.
+  async function call(cmd: string, args?: Record<string, unknown>, ok?: string) {
     setMessage(null);
     try {
-      onView(await invoke<AppView>("set_relay_url", { url: relay }));
-      setMessage("저장했습니다");
-    } catch (e) {
-      setMessage(String(e));
-    }
-  }
-
-  async function addDevice() {
-    setMessage(null);
-    try {
-      onView(await invoke<AppView>("start_invite"));
+      onView(await invoke<AppView>(cmd, args));
+      if (ok) setMessage(ok);
     } catch (e) {
       setMessage(String(e));
     }
@@ -34,15 +27,21 @@ export default function Home({
   return (
     <main>
       <header>
-        <span className={`dot ${view.connection}`} />
-        <h1 data-testid="status">{CONNECTION_LABEL[view.connection]}</h1>
+        <span className={`dot ${view.paused ? "paused" : view.connection}`} />
+        <h1 data-testid="status">
+          {view.paused ? "일시정지" : CONNECTION_LABEL[view.connection]}
+        </h1>
+        {view.paused && (
+          <button
+            className="secondary"
+            data-testid="resume"
+            onClick={() => call("set_paused", { paused: false })}
+          >
+            재개
+          </button>
+        )}
       </header>
 
-      {view.health !== "active" && (
-        <p className="warn">
-          그룹에서 제거되었거나 너무 오래 연결되지 않았습니다. 다시 페어링하세요.
-        </p>
-      )}
       {view.error && <p className="warn">{view.error}</p>}
 
       <section>
@@ -50,34 +49,75 @@ export default function Home({
           <h2>
             기기 {view.devices.length}대 · 에포크 {view.epoch ?? "-"}
           </h2>
-          <button data-testid="add-device" onClick={addDevice} disabled={view.health !== "active"}>
+          <button data-testid="add-device" onClick={() => call("start_invite")}>
             기기 추가
           </button>
         </div>
-        <ul className="devices" data-testid="devices">
-          {view.devices.map((d) => (
-            <li key={d.id}>
-              <span>{d.name}</span>
-              {d.isSelf && <span className="badge">이 기기</span>}
-              <span className="muted">{d.id}</span>
-            </li>
-          ))}
-        </ul>
+        <Devices view={view} onView={onView} onError={setMessage} />
       </section>
 
-      <label>
-        릴레이 주소
-        <div className="row">
+      <section>
+        <h2>설정</h2>
+        <label className="check">
           <input
-            value={relay}
-            onChange={(e) => setRelay(e.target.value)}
-            placeholder="ws://127.0.0.1:8787"
-            spellCheck={false}
+            type="checkbox"
+            data-testid="send-enabled"
+            checked={view.sendEnabled}
+            onChange={(e) =>
+              call("set_sync", { send: e.target.checked, receive: view.receiveEnabled })
+            }
           />
-          <button onClick={saveRelay}>저장</button>
-        </div>
-      </label>
-      {message && <p className="note">{message}</p>}
+          복사한 내용을 다른 기기로 보내기
+        </label>
+        <label className="check">
+          <input
+            type="checkbox"
+            data-testid="receive-enabled"
+            checked={view.receiveEnabled}
+            onChange={(e) =>
+              call("set_sync", { send: view.sendEnabled, receive: e.target.checked })
+            }
+          />
+          다른 기기에서 받은 내용을 클립보드에 쓰기
+        </label>
+        <label className="check">
+          <input
+            type="checkbox"
+            data-testid="autostart"
+            checked={view.autostart}
+            onChange={(e) => call("set_autostart", { on: e.target.checked })}
+          />
+          로그인할 때 자동으로 시작
+        </label>
+        {!view.paused && (
+          <button
+            className="secondary"
+            data-testid="pause"
+            onClick={() => call("set_paused", { paused: true })}
+          >
+            일시정지
+          </button>
+        )}
+        <label>
+          릴레이 주소
+          <div className="row">
+            <input
+              value={relay}
+              onChange={(e) => setRelay(e.target.value)}
+              placeholder="ws://127.0.0.1:8787"
+              spellCheck={false}
+            />
+            <button onClick={() => call("set_relay_url", { url: relay }, "저장했습니다")}>
+              저장
+            </button>
+          </div>
+        </label>
+      </section>
+      {message && (
+        <p className="note" data-testid="message">
+          {message}
+        </p>
+      )}
     </main>
   );
 }

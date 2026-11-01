@@ -24,9 +24,15 @@ fn valid_profile(name: &str) -> bool {
 pub struct Settings {
     pub relay_url: String,
     /// 비밀번호 관리자 등이 "보내지 말라"고 표시한 복사도 동기화한다 (기본: 예).
-    /// 끄면 표시가 붙은 복사는 읽지도 보내지도 않는다. 설정 화면은 F13에서 만든다.
+    /// 끄면 표시가 붙은 복사는 읽지도 보내지도 않는다. 끄는 화면은 만들지 않았고 `settings.json`에서 바꾼다.
     #[serde(default = "yes")]
     pub sync_sensitive: bool,
+    /// 복사한 내용을 다른 기기로 보낸다 (기본: 예).
+    #[serde(default = "yes")]
+    pub send_enabled: bool,
+    /// 다른 기기에서 온 내용을 클립보드에 쓴다 (기본: 예).
+    #[serde(default = "yes")]
+    pub receive_enabled: bool,
 }
 
 fn yes() -> bool {
@@ -38,6 +44,8 @@ impl Default for Settings {
         Self {
             relay_url: DEFAULT_RELAY.to_string(),
             sync_sensitive: true,
+            send_enabled: true,
+            receive_enabled: true,
         }
     }
 }
@@ -124,6 +132,8 @@ mod tests {
         let s = Settings {
             relay_url: "ws://10.0.0.5:9000".to_string(),
             sync_sensitive: false,
+            send_enabled: false,
+            receive_enabled: true,
         };
         save(dir.path(), &s).unwrap();
         assert_eq!(load(dir.path()), s);
@@ -139,7 +149,7 @@ mod tests {
         .unwrap();
         let s = load(dir.path());
         assert_eq!(s.relay_url, "ws://10.0.0.5:9000");
-        assert!(s.sync_sensitive);
+        assert!(s.sync_sensitive && s.send_enabled && s.receive_enabled);
     }
 
     #[test]

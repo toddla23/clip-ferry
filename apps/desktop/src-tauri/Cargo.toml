@@ -25,6 +25,8 @@ arboard = { version = "3", default-features = false, features = ["image-data"] }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
 # 크기 초과 같은 안내를 시스템 알림으로 띄운다.
 tauri-plugin-notification = "2"
+# 로그인 시 자동 시작 (Windows 레지스트리 / macOS LaunchAgent)
+tauri-plugin-autostart = "2"
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.62", features = [

@@ -59,3 +59,13 @@ button.secondary { background: transparent; color: var(--fg); border: 1px solid 
 main > button { margin-top: 12px; }
 label + .stack, label + .row { margin-top: 12px; }
 label > input, label > textarea { display: block; width: 100%; margin-top: 6px; }
+
+.dot.sm { width: 8px; height: 8px; flex: none; }
+.dot.online { background: var(--ok); }
+.dot.paused { background: var(--off); }
+.devices li .name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.devices li .muted { margin-left: 0; }
+button.link { background: transparent; color: var(--accent); padding: 2px 6px; }
+button.danger { background: #dc2626; }
+.check { display: flex; align-items: center; gap: 8px; color: var(--fg); margin-top: 8px; }
+.check input { flex: none; width: auto; }
