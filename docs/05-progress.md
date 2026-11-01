@@ -23,7 +23,7 @@
 | F12 | 이미지 동기화 | F11 | 확인대기 | 로컬·실제 앱+CLI 자동 검증 통과(Windows). 직접 확인, macOS 실행, 세 OS CI는 확인 필요 |
 | F13 | 기기 관리 UI와 설정 | F12 | 완료 | Windows 직접 확인(온라인 표시·이름 변경·제거·일시정지·다시 페어링), 세 OS CI 통과, main 머지. 재부팅 후 자동 시작·macOS 실행은 미확인. 플랫폼 표시는 프로토콜 변경이 필요해 제외 |
 | F14 | 릴레이 배포 (Pi + Tailscale) | F13 | 확인대기 | 사용자 시험 통과(Pi 5 arm64 빌드·기동, PC에서 Tailscale 접속, 텍스트·이미지 동기화). 로컬 fmt·clippy·test 통과. 세 OS CI는 확인 필요. macOS 미확인 |
-| F14b | 릴레이 공개 배포 (`wss://`) | F14 | 확인대기 | `tailscale serve`로 wss(무료 인증서), 릴레이 `--trust-proxy`(X-Forwarded-For). 사용자 시험 통과(wss 동기화·평문 차단·로그). Pi 재부팅 복구는 확인 전. 앱 기본 릴레이 주소·클라우드 이전은 도메인 결정(O-03, O-04) 후 |
+| F14b | 릴레이 공개 배포 (`wss://`) | F14 | 확인대기 | `tailscale serve`로 wss(무료 인증서), 릴레이 `--trust-proxy`(X-Forwarded-For). 사용자 시험 통과(wss 동기화·평문 차단·로그). Pi 재부팅 후 자동 복구 확인. 앱 기본 릴레이 주소·클라우드 이전은 도메인 결정(O-03, O-04) 후 |
 | **M3** | **Android** | | | |
 | F15 | Android 셸 + 코어 바인딩 | F14b | 대기 | |
 | F16 | Android 페어링 | F15 | 대기 | |
