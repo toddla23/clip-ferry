@@ -19,6 +19,8 @@ prost = "0.13"
 data-encoding = "2"
 tokio = { workspace = true, features = ["rt", "sync", "time", "macros"] }
 tokio-tungstenite.workspace = true
+# wss:// 용. ring 하나만 켜 두면 rustls가 암호 공급자를 자동으로 고른다 (Windows에서 cmake/nasm 불필요).
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 futures-util.workspace = true
 
 [build-dependencies]

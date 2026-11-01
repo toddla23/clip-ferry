@@ -1,0 +1,5 @@
+target
+.git
+.cf-profiles
+**/node_modules
+apps/desktop/dist
