@@ -24,6 +24,9 @@ struct Args {
     /// IP당 동시 연결 수
     #[arg(long, env = "CF_RELAY_MAX_CONNS_PER_IP", default_value_t = 32)]
     max_conns_per_ip: usize,
+    /// 리버스 프록시 뒤에서 `X-Forwarded-For`를 믿는다 (루프백·사설 주소에서 직접 온 연결만)
+    #[arg(long, env = "CF_RELAY_TRUST_PROXY")]
+    trust_proxy: bool,
 }
 
 #[tokio::main]
@@ -37,6 +40,7 @@ async fn main() -> anyhow::Result<()> {
         max_frames_per_sec: args.max_frames_per_sec,
         max_bytes_per_min: args.max_bytes_per_min,
         max_conns_per_ip: args.max_conns_per_ip,
+        trust_proxy: args.trust_proxy,
         ..Config::default()
     };
     let listener = TcpListener::bind(&args.listen).await?;

@@ -13,3 +13,6 @@ services:
     # 기본은 이 기기에서만 접속. Tailscale로 열려면 CF_BIND에 Tailscale IP를 넣는다 (예: 100.x.x.x).
     ports:
       - "${CF_BIND:-127.0.0.1}:8787:8787"
+    environment:
+      # 리버스 프록시(tailscale serve 등) 뒤에서만 true. 포트가 127.0.0.1에만 열려 있을 때 쓴다.
+      CF_RELAY_TRUST_PROXY: "${CF_TRUST_PROXY:-false}"
