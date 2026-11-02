@@ -33,7 +33,7 @@
 | `transport` | 릴레이 WebSocket 연결, 재연결(지수 백오프), 구독, 핑, 송수신 |
 | `transfer` | 이미지 청크 분할/조립, 해시 검증, 타임아웃 |
 | `store` | 로컬 상태 저장(암호화된 파일) + `SecretStore` 트레이트 |
-| `api` | 셸이 쓰는 공개 API (UniFFI로 Kotlin/Swift 노출) |
+| `api` | 셸이 쓰는 공개 API (모바일 셸에는 `ffi/` 크레이트가 UniFFI로 노출, D-015) |
 
 코어 공개 API 스케치 (구체 시그니처는 구현 기능에서 확정):
 
@@ -79,6 +79,14 @@ pub trait SecretStore: Send + Sync {         // 셸이 구현 (플랫폼 보안 
 - 확장 시(F26): 노드 간 전달을 NATS 주제(`cf.<채널 ID 해시>`)로. 노드는 자기 연결이 구독한 채널만 NATS 구독.
 - 설정은 환경 변수/CLI 인자. 디스크 쓰기 없음(로그는 stdout).
 
+### FFI (`ffi/`, 크레이트 `clip-ferry-ffi`)
+
+- 모바일 셸(Kotlin/Swift)용 UniFFI 바인딩. 코어를 감싸는 얇은 층이며 암호·프로토콜 로직은 없다. 코어 크레이트에는 UniFFI를 넣지 않는다(D-015).
+- `ClipFerryClient` 객체가 tokio 런타임과 릴레이 세션을 쥐고, 셸에는 동기 호출(`open`, `init_device`, `create_group`, `status`, `start`, `stop`)과 콜백(`CoreEvents`: 연결 상태·온라인 기기 수·변경 알림)을 준다. 비밀 저장소는 셸이 구현하는 `SecretVault` 콜백이다.
+- 오류는 `FfiError`(`Removed` / `Failed{reason}`)로 단순화한다.
+- 바인딩 생성기는 `tools/uniffi-bindgen`. 라이브러리 모드로 빌드된 `.so`의 메타데이터에서 Kotlin을 만든다.
+- 페어링(F16)·클립보드 송수신(F17~)은 같은 방식으로 이 크레이트에 추가한다.
+
 ### CLI (`tools/cli/`, 크레이트 `clip-ferry-cli`)
 
 - 개발·검증용 클라이언트. 코어를 그대로 사용. `--profile <이름>`으로 한 컴퓨터에서 여러 기기를 흉내 낸다.
@@ -92,6 +100,8 @@ pub trait SecretStore: Send + Sync {         // 셸이 구현 (플랫폼 보안 
 | Android (`apps/android/`) | Kotlin + Jetpack Compose | 포그라운드 서비스, 빠른 설정 타일, 알림 버튼, 공유·텍스트 선택 메뉴, QR 스캔, FCM |
 | iOS (`apps/ios/`) | Swift + SwiftUI | 포그라운드 수신, App Intents, Share Extension, Notification Service Extension, QR 스캔, APNs |
 
+Android 빌드 메모: 필요한 것은 Android Studio(SDK 플랫폼·NDK·CMake), 환경 변수 `ANDROID_HOME`·`ANDROID_NDK_HOME`, `rustup target add aarch64-linux-android x86_64-linux-android`, `cargo install cargo-ndk --locked`. `scripts/build-android-core.ps1`(Windows) 또는 `.sh`(macOS·Linux)가 `.so`를 `apps/android/app/src/main/jniLibs/`에, Kotlin 바인딩을 `app/src/main/java/uniffi/`에 만든다(둘 다 git에 넣지 않는다). 그 뒤 Android Studio로 열거나 `apps/android`에서 `./gradlew installDebug`. 처음 받은 저장소는 코어 스크립트를 먼저 한 번 돌려야 Gradle 빌드가 된다. Android 셸의 파일은 `KeystoreVault`(Keystore 비밀 저장소), `CoreController`(코어 ↔ 화면 상태), `ClipFerryService`(포그라운드 서비스·네트워크 변경 감지), `MainActivity`(Compose 화면).
+
 데스크톱 빌드 메모: Tauri 매크로가 컴파일 때 `apps/desktop/dist`(UI 빌드 결과)를 읽는다. 새로 받은 저장소에서는 `cd apps/desktop && npm ci && npm run build`를 먼저 한 번 해야 `cargo build/test --workspace`가 된다(CI도 같은 순서). `src-tauri`는 `shell`(코어 연결), `tray`, `secrets`(keyring), `settings`, `view`(UI용 요약)로 나뉜다.
 
 셸에 비즈니스 로직을 넣지 않는다. "무엇을 보낼지·받은 걸 어디에 쓸지"만 결정한다.
@@ -104,16 +114,19 @@ clip-ferry/
 ├─ README.md
 ├─ docs/                       # 이 문서들
 ├─ proto/clip_ferry.proto      # 모든 와이어 포맷의 원본
-├─ Cargo.toml                  # workspace: core, relay, tools/cli, apps/desktop/src-tauri
+├─ Cargo.toml                  # workspace: core, ffi, relay, tools/cli, tools/uniffi-bindgen, apps/desktop/src-tauri
 ├─ core/
 │  ├─ src/{crypto,envelope,group,pairing,transport,transfer,store,api}/
 │  └─ tests/
+├─ ffi/                        # 모바일용 UniFFI 바인딩 (D-015)
 ├─ relay/
 ├─ tools/cli/
+├─ tools/uniffi-bindgen/
 ├─ apps/
 │  ├─ desktop/                 # ui/ (React) + src-tauri/
 │  ├─ android/                 # Gradle 프로젝트, core는 cargo-ndk로 빌드한 .so + UniFFI Kotlin
 │  └─ ios/                     # Xcode 프로젝트, core는 xcframework + UniFFI Swift
+├─ scripts/                    # build-android-core 등
 ├─ deploy/                     # Dockerfile, fly.toml 등 (F14)
 └─ .github/workflows/
 ```
@@ -153,7 +166,7 @@ clip-ferry/
 ## 로컬 저장
 
 - **비밀**(기기 개인키, 현재·이전 에포크 그룹 키, 로컬 저장 키): 플랫폼 보안 저장소 (`SecretStore`)
-  - Windows: Credential Manager (`keyring`) / macOS·iOS: Keychain / Android: Keystore로 감싼 EncryptedSharedPreferences
+  - Windows: Credential Manager (`keyring`) / macOS·iOS: Keychain / Android: Keystore의 AES-256-GCM 키로 봉인한 SharedPreferences(이름을 AAD로 묶는다. `EncryptedSharedPreferences`는 deprecated라 직접 구현)
 - **상태**(로스터, 설정, 에포크 번호): 앱 데이터 폴더의 `state.bin`. 로컬 저장 키로 XChaCha20-Poly1305 암호화.
   - 형식: `"CFST"`(4) ‖ 형식 버전(1) ‖ nonce(24) ‖ 암호문. 머리말(`"CFST"`‖버전)이 aad. 평문은 `LocalState` protobuf.
   - 비밀 저장소 키 이름: `device_keys`(서명 시드‖DH 비밀, 64B), `state_key`(32B), `group_key/<에포크>`(32B).

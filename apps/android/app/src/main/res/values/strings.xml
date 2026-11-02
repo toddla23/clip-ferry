@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">clip-ferry</string>
+    <string name="channel_name">연결 상태</string>
+    <string name="channel_description">릴레이 연결을 유지하는 동안 보이는 알림입니다</string>
+    <string name="notif_title">clip-ferry</string>
+    <string name="notif_connected">연결됨</string>
+    <string name="notif_connected_online">연결됨 · 온라인 %1$d대</string>
+    <string name="notif_reconnecting">재연결 중…</string>
+    <string name="notif_stopped">연결 안 됨</string>
+    <string name="notif_action_stop">중지</string>
+    <string name="notif_removed">그룹에서 제거됨 — 다시 페어링하세요</string>
+</resources>

@@ -1,0 +1,11 @@
+[package]
+name = "uniffi-bindgen"
+description = "UniFFI 바인딩(Kotlin/Swift) 생성기 실행 파일"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+uniffi = { version = "0.32", features = ["cli"] }
