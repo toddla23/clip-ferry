@@ -1,0 +1,19 @@
+[package]
+name = "clip-ferry-ffi"
+description = "clip-ferry 코어를 Kotlin/Swift에 노출하는 UniFFI 바인딩 (모바일 셸용)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lib]
+crate-type = ["cdylib", "lib"]
+
+[dependencies]
+clip-ferry-core = { path = "../core" }
+thiserror = "1"
+tokio = { workspace = true, features = ["rt-multi-thread"] }
+uniffi = "0.32"
+
+[dev-dependencies]
+tempfile = "3"
