@@ -104,6 +104,14 @@ object CoreController : CoreEvents {
         if (client?.isRunning() == true) start()
     }
 
+    /** 기기에 네트워크가 없을 때: 코어가 알아채기 전에 화면 표시만 먼저 바꾼다. */
+    @Synchronized
+    fun markOffline() {
+        mutableState.update {
+            if (it.link == Link.CONNECTED) it.copy(link = Link.RECONNECTING, online = 0) else it
+        }
+    }
+
     /** 릴레이 주소를 저장한다. 잘못되었으면 이유를, 괜찮으면 `null`을 돌려준다. */
     fun setRelayUrl(url: String): String? {
         val trimmed = url.trim()

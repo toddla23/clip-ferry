@@ -10,6 +10,9 @@ import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.net.ConnectivityManager
 import android.net.Network
+import android.net.NetworkCapabilities
+import android.net.NetworkRequest
+import android.os.SystemClock
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
@@ -31,7 +34,6 @@ class ClipFerryService : Service() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private var restartJob: Job? = null
     private var stateJob: Job? = null
-    private var firstNetworkEvent = true
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -85,23 +87,42 @@ class ClipFerryService : Service() {
     }
 
     /**
-     * 기본 네트워크가 바뀌면(Wi-Fi ↔ LTE 등) 연결을 새로 연다.
-     * 안 하면 끊어진 연결이 핑 시간 초과(최대 60초)를 기다리다 뒤늦게 복구된다.
+     * 실제 회선(Wi-Fi·LTE 등)이 바뀌거나 사라지면 연결을 새로 열거나 끊김으로 표시한다.
+     * VPN(Tailscale)은 일부러 뺀다. VPN이 켜져 있으면 기본 네트워크가 VPN이라
+     * 회선이 모두 꺼져도 사라졌다는 알림이 오지 않는다.
+     * 안 하면 끊어진 연결이 핑 시간 초과(최대 60초 이상)를 기다리다 뒤늦게 복구된다.
      */
     private fun watchNetwork() {
         if (networkCallback != null) return
+        val request = NetworkRequest.Builder()
+            .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+            .addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)
+            .build()
+        val registeredAt = SystemClock.elapsedRealtime()
         val callback = object : ConnectivityManager.NetworkCallback() {
+            private val networks = mutableSetOf<Network>()
+
             override fun onAvailable(network: Network) {
-                // 등록 직후 현재 네트워크로 오는 첫 알림은 바뀐 것이 아니다.
-                if (firstNetworkEvent) {
-                    firstNetworkEvent = false
-                    return
-                }
+                networks.add(network)
+                // 등록 직후 현재 회선들로 오는 알림은 바뀐 것이 아니다.
+                if (SystemClock.elapsedRealtime() - registeredAt < INITIAL_EVENTS_MS) return
                 scheduleRestart()
+            }
+
+            override fun onLost(network: Network) {
+                networks.remove(network)
+                if (networks.isEmpty()) {
+                    // 회선이 전부 없어졌다. 핑 시간 초과를 기다리지 않고 바로 표시한다.
+                    restartJob?.cancel()
+                    CoreController.markOffline()
+                } else {
+                    // 쓰던 회선이 사라지고 다른 회선이 남았다. 새로 연결한다.
+                    scheduleRestart()
+                }
             }
         }
         networkCallback = callback
-        getSystemService(ConnectivityManager::class.java).registerDefaultNetworkCallback(callback)
+        getSystemService(ConnectivityManager::class.java).registerNetworkCallback(request, callback)
     }
 
     /** 짧은 시간에 여러 번 바뀌어도 한 번만 다시 연결한다. */
@@ -164,6 +185,7 @@ class ClipFerryService : Service() {
         private const val NOTIFICATION_ID = 1
         private const val ACTION_STOP = "app.clipferry.android.STOP"
         private const val NETWORK_SETTLE_MS = 1_000L
+        private const val INITIAL_EVENTS_MS = 1_500L
 
         fun start(context: Context) {
             context.startForegroundService(Intent(context, ClipFerryService::class.java))

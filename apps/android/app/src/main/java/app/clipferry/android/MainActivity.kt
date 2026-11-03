@@ -173,12 +173,12 @@ private fun RelayCard(saved: String) {
             Button(
                 onClick = {
                     message = CoreController.setRelayUrl(text)
-                    if (message == null && CoreController.state.value.serviceEnabled) {
-                        // 새 주소로 다시 연결한다.
+                    if (message == null) {
+                        // 주소가 같아도 다시 연결한다. 중지된 상태였으면 켠다.
+                        CoreController.setServiceEnabled(true)
                         ClipFerryService.start(context)
                     }
                 },
-                enabled = text.trim() != saved,
             ) { Text("저장하고 다시 연결") }
             Text(
                 "에뮬레이터에서 PC의 릴레이는 ws://10.0.2.2:8787 입니다.",
