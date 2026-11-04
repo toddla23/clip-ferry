@@ -26,7 +26,7 @@
 | F14b | 릴레이 공개 배포 (`wss://`) | F14 | 완료 | `tailscale serve`로 wss(무료 인증서), 릴레이 `--trust-proxy`(X-Forwarded-For). 사용자 시험 통과(wss 동기화·평문 차단·로그). Pi 재부팅 후 자동 복구 확인, main 머지(PR #18). 앱 기본 릴레이 주소·클라우드 이전은 도메인 결정(O-03, O-04) 후로 미룸 |
 | **M3** | **Android** | | | |
 | F15 | Android 셸 + 코어 바인딩 | F14b | 완료 | 실기기에서 연결·백그라운드 유지·배터리 안내·네트워크 전환·재시작 확인 통과, PR #19 머지. 확인 문서: `todo/F15-확인.md` |
-| F16 | Android 페어링 | F15 | 대기 | |
+| F16 | Android 페어링 | F15 | 진행중 | 구현·FFI 테스트·빌드 끝, 실기기 확인 대기. 확인 문서: `todo/F16-확인.md` |
 | F17 | Android 수신 → 클립보드 | F16 | 대기 | |
 | F18 | Android 타일 · 알림 버튼 | F17 | 대기 | |
 | F19 | Android 공유 · 텍스트 선택 메뉴 | F18 | 대기 | |
@@ -50,6 +50,7 @@
 
 새 항목을 위에 추가한다. 형식: `YYYY-MM-DD F00 — 한 줄`
 
+- 2026-11-04 F16 — FFI에 페어링(`start_invite`·`decide_invite`·`start_join`·`cancel_pairing`, 늦은 알림 버림)·`devices`(온라인 표시)·`leave_group`·`qr_matrix`, FFI 테스트 10개(실제 릴레이로 QR 참여·승인·서로 온라인, 코드 참여·거절, 취소, 나가기). Android: 자동 그룹 생성 제거, 첫 실행 화면(이름·QR로 참여·코드 입력·새 그룹), CameraX + ML Kit(번들) QR 스캔, 카메라 거부 시 코드 입력 안내, 초대 화면(QR·코드·남은 시간)·확인 숫자 승인/거절, 기기 목록(읽기 전용), 혼자/제거된 그룹 나가기. QR 참여 시 QR의 릴레이 주소를 저장. 진행중
 - 2026-11-04 F15 — PR #19 머지(세 OS CI 통과), 완료 처리
 - 2026-11-03 F15 — 실기기 확인 통과. 시험 중 수정: `저장하고 다시 연결` 버튼 항상 활성(중지 뒤 재연결 불가 해소), 회선이 모두 사라지면 바로 `재연결 중` 표시, VPN(Tailscale)을 뺀 실제 회선만 감시. 회선 소실 표시는 약 15초 지연(허용). 확인대기
 - 2026-11-02 F15 — `ffi/`(UniFFI 바인딩, D-015)·`tools/uniffi-bindgen`, `scripts/build-android-core`(.ps1/.sh), `apps/android`(Kotlin·Compose, Keystore 비밀 저장소, 포그라운드 서비스, 네트워크 변경 시 재연결, 배터리 최적화 안내, 릴레이 주소 설정), FFI 테스트 4개, `assembleDebug` 성공. 에뮬레이터는 PC 메모리 부족으로 접고 실기기 확인 대기. 진행중

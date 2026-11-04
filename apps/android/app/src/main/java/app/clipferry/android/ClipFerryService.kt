@@ -57,6 +57,11 @@ class ClipFerryService : Service() {
             ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE,
         )
         CoreController.start()
+        if (!CoreController.state.value.hasGroup) {
+            // 아직 그룹이 없다(첫 실행). 연결할 곳이 없으니 알림을 남기지 않는다. 페어링이 끝나면 다시 켠다.
+            stopSelf()
+            return START_NOT_STICKY
+        }
         watchState()
         watchNetwork()
         return START_STICKY
