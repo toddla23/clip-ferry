@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 직접 공유 바로가기(F19, ShareShortcut)를 공유 시트에 잇는다. -->
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+    <share-target android:targetClass="app.clipferry.android.ShareActivity">
+        <data android:mimeType="text/plain" />
+        <data android:mimeType="image/*" />
+        <category android:name="app.clipferry.android.category.SEND_TO_GROUP" />
+    </share-target>
+</shortcuts>

@@ -29,6 +29,10 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+            <!-- 직접 공유 바로가기의 share-target (F19) -->
+            <meta-data
+                android:name="android.app.shortcuts"
+                android:resource="@xml/shortcuts" />
         </activity>
 
         <!-- 타일·알림 버튼이 여는 보이지 않는 액티비티(F18). 초점을 받아 클립보드를 읽고 바로 닫힌다. -->

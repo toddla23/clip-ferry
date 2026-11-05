@@ -7,5 +7,6 @@ class ClipFerryApp : Application() {
         super.onCreate()
         ShareActivity.clearStale(this)
         CoreController.init(this)
+        ShareShortcut.publish(this)
     }
 }
