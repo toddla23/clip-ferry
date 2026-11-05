@@ -11,15 +11,32 @@ android {
         applicationId = "app.clipferry.android"
         minSdk = 26
         targetSdk = 36
-        versionCode = 1
-        versionName = "0.1.0"
+        // 배포 워크플로가 태그(v0.1.0 → 0.1.0)와 실행 번호로 덮어쓴다.
+        versionCode = (System.getenv("CLIPFERRY_VERSION_CODE") ?: "1").toInt()
+        versionName = System.getenv("CLIPFERRY_VERSION_NAME") ?: "0.1.0"
         // 코어(.so)는 이 두 ABI만 만든다 (scripts/build-android-core).
         ndk { abiFilters += listOf("arm64-v8a", "x86_64") }
+    }
+
+    // 배포용 서명 키 (scripts/release 참고). 환경 변수가 없으면 디버그 키로 서명한다(로컬 시험용).
+    // 업데이트 설치는 같은 키로 서명된 APK끼리만 되므로, 배포본은 항상 같은 키를 쓴다.
+    val releaseKeystore = System.getenv("CLIPFERRY_KEYSTORE")?.takeIf { it.isNotBlank() }
+    signingConfigs {
+        if (releaseKeystore != null) {
+            create("release") {
+                storeFile = file(releaseKeystore)
+                storePassword = System.getenv("CLIPFERRY_KEYSTORE_PASSWORD")
+                keyAlias = System.getenv("CLIPFERRY_KEY_ALIAS") ?: "clip-ferry"
+                keyPassword = System.getenv("CLIPFERRY_KEY_PASSWORD")
+                    ?: System.getenv("CLIPFERRY_KEYSTORE_PASSWORD")
+            }
+        }
     }
 
     buildTypes {
         release {
             isMinifyEnabled = false
+            signingConfig = signingConfigs.findByName("release") ?: signingConfigs.getByName("debug")
         }
     }
 

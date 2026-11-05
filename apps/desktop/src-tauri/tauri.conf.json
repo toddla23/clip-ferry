@@ -27,7 +27,16 @@
     }
   },
   "bundle": {
-    "active": false,
+    "active": true,
+    "targets": ["nsis", "dmg", "app", "deb", "appimage"],
+    "category": "Utility",
+    "shortDescription": "기기 사이 종단간 암호화 클립보드 공유",
+    "windows": {
+      "nsis": { "languages": ["Korean", "English"], "installMode": "currentUser" }
+    },
+    "linux": {
+      "deb": { "depends": ["libayatana-appindicator3-1"] }
+    },
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
