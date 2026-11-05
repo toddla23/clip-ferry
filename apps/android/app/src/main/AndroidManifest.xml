@@ -29,6 +29,10 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+            <!-- 직접 공유 바로가기의 share-target (F19) -->
+            <meta-data
+                android:name="android.app.shortcuts"
+                android:resource="@xml/shortcuts" />
         </activity>
 
         <!-- 타일·알림 버튼이 여는 보이지 않는 액티비티(F18). 초점을 받아 클립보드를 읽고 바로 닫힌다. -->
@@ -39,6 +43,44 @@
             android:noHistory="true"
             android:taskAffinity=""
             android:theme="@style/Theme.ClipFerry.Send" />
+
+        <!-- 공유 시트·텍스트 선택 메뉴에서 보내기 (F19). 보이지 않고, 받은 내용을 보낸 뒤 바로 닫힌다.
+             복사하는 동안 다시 만들어지면 두 번 보내게 되므로 설정 변경에도 다시 만들지 않는다. -->
+        <activity
+            android:name=".ShareActivity"
+            android:exported="true"
+            android:label="@string/share_label"
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:taskAffinity=""
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboard|keyboardHidden|navigation|uiMode|density|locale|layoutDirection|fontScale"
+            android:theme="@style/Theme.ClipFerry.Send">
+            <intent-filter android:label="@string/share_label">
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="text/plain" />
+                <data android:mimeType="image/*" />
+            </intent-filter>
+            <intent-filter android:label="@string/share_label">
+                <action android:name="android.intent.action.SEND_MULTIPLE" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="image/*" />
+            </intent-filter>
+        </activity>
+
+        <!-- 텍스트 선택 메뉴 "PC로 보내기" (F19). 메뉴는 intent-filter가 아닌 액티비티 이름을 쓰므로
+             이름이 다른 별칭으로 둔다. 실제 처리는 ShareActivity가 한다. -->
+        <activity-alias
+            android:name=".ProcessTextAlias"
+            android:exported="true"
+            android:label="@string/process_text_label"
+            android:targetActivity=".ShareActivity">
+            <intent-filter>
+                <action android:name="android.intent.action.PROCESS_TEXT" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="text/plain" />
+            </intent-filter>
+        </activity-alias>
 
         <!-- 빠른 설정 타일 "클립보드 보내기" (F18). -->
         <service

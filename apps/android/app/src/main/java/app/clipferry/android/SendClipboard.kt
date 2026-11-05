@@ -13,6 +13,7 @@ import android.os.Looper
 import android.util.Log
 import android.widget.Toast
 import java.io.ByteArrayOutputStream
+import java.io.File
 import java.util.concurrent.Executors
 import uniffi.clip_ferry_ffi.FfiException
 
@@ -114,7 +115,73 @@ object SendClipboard {
         }
     }
 
-    private class TooLarge : Exception()
+    // ------------------------------------------------------- 공유 · 텍스트 선택 메뉴 (F19)
+
+    /** [ShareActivity]가 넘기는 것. 이미지는 액티비티가 떠 있는 동안 캐시 파일로 복사해 둔다. */
+    sealed class Outgoing {
+        data class Text(val text: String) : Outgoing()
+        data class ImageFile(val file: File) : Outgoing()
+        data class Failed(val reason: String) : Outgoing()
+    }
+
+    /**
+     * 순서대로 한 건씩 보내고 결과를 토스트 하나로 알린다. 보낸 이미지 파일은 지운다.
+     * 한 건이 실패해도 나머지는 계속 보낸다.
+     */
+    fun sendBatch(context: Context, items: List<Outgoing>) {
+        val app = context.applicationContext
+        worker.execute {
+            val message = try {
+                CoreController.awaitConnected(CONNECT_WAIT_MS) ?: sendEach(items)
+            } finally {
+                items.forEach { if (it is Outgoing.ImageFile) it.file.delete() }
+                items.firstNotNullOfOrNull { (it as? Outgoing.ImageFile)?.file?.parentFile }?.delete()
+            }
+            toast(app, message)
+        }
+    }
+
+    /** 작업 스레드에서. 사용자에게 보여 줄 결과 한 줄을 돌려준다. */
+    private fun sendEach(items: List<Outgoing>): String {
+        var sent = 0
+        var delivered = 0
+        var lastError: String? = null
+        for (item in items) {
+            try {
+                delivered = when (item) {
+                    is Outgoing.Text -> CoreController.sendText(item.text)
+                    is Outgoing.ImageFile -> CoreController.sendImage(item.file.readBytes())
+                    is Outgoing.Failed -> {
+                        lastError = item.reason
+                        continue
+                    }
+                }
+                sent++
+            } catch (e: FfiException) {
+                lastError = when (e) {
+                    is FfiException.Failed -> e.reason
+                    is FfiException.Removed -> return "이 기기는 그룹에서 제거되었습니다. 다시 페어링하세요"
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "보내기 실패: ${e.javaClass.simpleName}")
+                lastError = "보내지 못했습니다"
+            }
+        }
+        val images = items.count { it !is Outgoing.Text }
+        val what = when {
+            images == 0 -> "텍스트를"
+            items.size == 1 -> "이미지를"
+            else -> "이미지 ${sent}장을"
+        }
+        return when {
+            sent == 0 -> lastError ?: "보내지 못했습니다"
+            sent < items.size -> "${items.size}장 중 ${sent}장만 보냈습니다 ($lastError)"
+            delivered > 0 -> "$what 다른 기기 ${delivered}대로 보냈습니다"
+            else -> "보냈지만 지금 연결된 다른 기기가 없습니다"
+        }
+    }
+
+    class TooLarge : Exception()
 
     private fun isSensitive(desc: ClipDescription): Boolean {
         val extras = desc.extras ?: return false
@@ -133,8 +200,9 @@ object SendClipboard {
 
     /**
      * 이미지를 읽는다. PNG·JPEG·GIF·WebP는 그대로 보내고, 다른 형식(HEIC 등)은 JPEG로 바꾼다.
+     * 작업 스레드에서 부른다. 권한이 없으면 [SecurityException], 20 MiB를 넘으면 [TooLarge].
      */
-    private fun loadImage(context: Context, uri: Uri): ByteArray {
+    fun loadImage(context: Context, uri: Uri): ByteArray {
         val bytes = context.contentResolver.openInputStream(uri)?.use { input ->
             val out = ByteArrayOutputStream()
             val buf = ByteArray(64 * 1024)
