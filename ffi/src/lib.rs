@@ -4,18 +4,20 @@
 //! 암호·프로토콜 로직은 없다. tokio 런타임을 하나 쥐고, 코어를 부르고, 이벤트를 셸에 알릴 뿐이다.
 //! F15: 기기·그룹 만들기, 상태 조회, 릴레이 세션 시작·중지, 연결 상태 알림.
 //! F16: 페어링(초대·참여·승인), 기기 목록(온라인 표시), 그룹 나가기, QR 칸 만들기.
-//! 클립보드 송수신(F17~)은 이후 기능에서 같은 방식으로 추가한다.
+//! F17: 받은 텍스트·이미지를 셸에 넘긴다(셸이 클립보드에 쓴다).
+//! 보내기(F18~)는 이후 기능에서 같은 방식으로 추가한다.
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use clip_ferry_core::api::{ClipFerry, Config, Error, GroupHealth};
+use clip_ferry_core::api::{Clip, ClipFerry, Config, Error, GroupHealth, ImageClip};
 use clip_ferry_core::crypto::DeviceId;
 use clip_ferry_core::pair_flow::{self, InviteFlow, InviteUpdate, JoinFlow, JoinUpdate};
 use clip_ferry_core::pairing::Invite;
 use clip_ferry_core::session::{ConnectionStatus, EventSink, Session};
 use clip_ferry_core::store::{SecretStore, StoreError};
+use clip_ferry_core::transfer;
 use clip_ferry_core::transport::TransportConfig;
 
 uniffi::setup_scaffolding!();
@@ -157,9 +159,14 @@ pub trait CoreEvents: Send + Sync {
     fn on_online_count(&self, count: u32);
     /// 기기 목록·에포크·그룹 상태 중 무언가 바뀌었다. 화면은 `status()`·`devices()`로 다시 읽는다.
     fn on_changed(&self);
+    /// 다른 기기가 보낸 텍스트(복호화·서명·중복 확인 끝). 비어 있지 않고 1 MiB 이하다.
+    fn on_text(&self, from_name: String, text: String);
+    /// 다른 기기가 보낸 이미지(길이·해시 확인 끝). `mime`은 보낸 쪽이 적은 값이 아니라
+    /// 머리말로 다시 확인한 형식(`image/png`·`image/jpeg`·`image/gif`·`image/webp`)이다.
+    fn on_image(&self, from_name: String, mime: String, bytes: Vec<u8>);
 }
 
-/// 코어 이벤트를 셸 콜백으로 옮긴다. 받은 클립은 F17 전까지 다루지 않는다.
+/// 코어 이벤트를 셸 콜백으로 옮긴다.
 /// 온라인 기기 목록은 `devices()`가 쓰도록 함께 적어 둔다.
 struct EventAdapter {
     events: Arc<dyn CoreEvents>,
@@ -167,7 +174,18 @@ struct EventAdapter {
 }
 
 impl EventSink for EventAdapter {
-    fn on_clip(&self, _clip: clip_ferry_core::api::Clip) {}
+    fn on_clip(&self, clip: Clip) {
+        self.events.on_text(clip.from_name, clip.text);
+    }
+
+    fn on_image(&self, image: ImageClip) {
+        // 보낸 쪽이 적은 형식은 믿지 않는다. 머리말로 알 수 없는 형식이면 셸에 넘기지 않는다.
+        let Some(sniffed) = transfer::sniff(&image.bytes) else {
+            return;
+        };
+        self.events
+            .on_image(image.from_name, sniffed.mime.to_string(), image.bytes);
+    }
 
     fn on_status(&self, status: ConnectionStatus) {
         if status != ConnectionStatus::Connected {
@@ -540,6 +558,8 @@ mod tests {
     struct Recorder {
         statuses: Mutex<Vec<LinkStatus>>,
         online: Mutex<Vec<u32>>,
+        texts: Mutex<Vec<(String, String)>>,
+        images: Mutex<Vec<(String, String, Vec<u8>)>>,
     }
 
     impl CoreEvents for Recorder {
@@ -550,6 +570,12 @@ mod tests {
             self.online.lock().unwrap().push(count);
         }
         fn on_changed(&self) {}
+        fn on_text(&self, from_name: String, text: String) {
+            self.texts.lock().unwrap().push((from_name, text));
+        }
+        fn on_image(&self, from_name: String, mime: String, bytes: Vec<u8>) {
+            self.images.lock().unwrap().push((from_name, mime, bytes));
+        }
     }
 
     #[derive(Default)]
@@ -888,6 +914,106 @@ mod tests {
         phone_pair.wait(|e| matches!(e, PairEvent::Connected).then_some(()));
         std::thread::sleep(Duration::from_millis(500));
         assert!(pc_pair.0.lock().unwrap().is_empty());
+    }
+
+    /// `pc`가 초대하고 `mobile`이 QR로 참여해 승인까지 끝낸다.
+    fn pair(pc: &Phone, mobile: &Phone, url: &str) {
+        let pc_pair = Arc::new(PairRecorder::default());
+        let info = pc
+            .client
+            .start_invite(url.to_string(), pc_pair.clone())
+            .unwrap();
+        let phone_pair = Arc::new(PairRecorder::default());
+        mobile
+            .client
+            .start_join(info.qr_string, url.to_string(), phone_pair.clone())
+            .unwrap();
+        pc_pair.wait(|e| matches!(e, PairEvent::Request { .. }).then_some(()));
+        pc.client.decide_invite(true);
+        phone_pair.wait(|e| matches!(e, PairEvent::Joined).then_some(()));
+        pc.client.cancel_pairing();
+        mobile.client.cancel_pairing();
+    }
+
+    /// 머리말만 갖춘 PNG (sniff가 형식과 크기를 읽을 수 있다).
+    fn tiny_png(width: u32, height: u32) -> Vec<u8> {
+        let mut b = b"\x89PNG\r\n\x1a\n\x00\x00\x00\x0dIHDR".to_vec();
+        b.extend_from_slice(&width.to_be_bytes());
+        b.extend_from_slice(&height.to_be_bytes());
+        b.extend_from_slice(&[8, 6, 0, 0, 0]);
+        b.resize(300_000, 7); // 청크 두 개로 나뉘는 크기
+        b
+    }
+
+    /// 다른 기기가 보낸 텍스트·이미지가 셸 콜백으로 온다. 형식을 알 수 없는 이미지는 오지 않는다.
+    #[test]
+    fn received_text_and_image_reach_the_shell() {
+        let (_rt, _relay, url) = relay();
+        let pc = phone("PC", true);
+        let mobile = phone("폰", false);
+        pair(&pc, &mobile, &url);
+
+        let pc_events = Arc::new(Recorder::default());
+        let phone_events = Arc::new(Recorder::default());
+        pc.client.start(url.clone(), pc_events).unwrap();
+        mobile.client.start(url, phone_events.clone()).unwrap();
+        for c in [&pc.client, &mobile.client] {
+            wait_until(
+                || c.devices().iter().filter(|d| d.online).count() == 2,
+                "두 기기가 서로 온라인으로 보이지 않았다",
+            );
+        }
+
+        let send = |f: &dyn Fn(&Session) -> u32| {
+            let slot = pc.client.session.lock().unwrap();
+            f(slot.as_ref().unwrap())
+        };
+        let rt = &pc.client.runtime;
+        assert_eq!(
+            send(&|s| rt.block_on(s.send_text("안녕 폰 📋")).unwrap()),
+            1
+        );
+        wait_until(
+            || !phone_events.texts.lock().unwrap().is_empty(),
+            "텍스트가 오지 않았다",
+        );
+        assert_eq!(
+            phone_events.texts.lock().unwrap()[0],
+            ("PC".to_string(), "안녕 폰 📋".to_string())
+        );
+
+        // 보낸 쪽은 JPEG라고 적었지만 실제로는 PNG다. 셸에는 머리말로 확인한 형식이 간다.
+        let png = tiny_png(3, 2);
+        send(&|s| rt.block_on(s.send_image(&png, "image/jpeg", 3, 2)).unwrap());
+        wait_until(
+            || !phone_events.images.lock().unwrap().is_empty(),
+            "이미지가 오지 않았다",
+        );
+        {
+            let images = phone_events.images.lock().unwrap();
+            assert_eq!(images[0].0, "PC");
+            assert_eq!(images[0].1, "image/png");
+            assert_eq!(images[0].2, png);
+        }
+
+        // 형식을 알 수 없는 바이트는 셸에 넘기지 않는다. 뒤이은 텍스트로 처리가 끝났음을 확인한다.
+        send(&|s| {
+            rt.block_on(s.send_image(&[1u8; 1000], "image/png", 1, 1))
+                .unwrap()
+        });
+        send(&|s| rt.block_on(s.send_text("끝")).unwrap());
+        wait_until(
+            || phone_events.texts.lock().unwrap().len() == 2,
+            "두 번째 텍스트가 오지 않았다",
+        );
+        assert_eq!(phone_events.images.lock().unwrap().len(), 1);
+        // 자기가 보낸 것은 자기에게 오지 않는다.
+        assert!(phone_events
+            .texts
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|(n, _)| n == "PC"));
     }
 
     #[test]

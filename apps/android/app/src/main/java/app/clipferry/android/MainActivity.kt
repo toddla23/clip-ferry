@@ -136,6 +136,8 @@ private fun ReadyScreen(state: UiState, batteryExempt: Boolean) {
 
     StatusCard(state)
 
+    ReceiveCard(state)
+
     DevicesCard(
         devices = state.devices,
         canInvite = !state.removed,
@@ -182,6 +184,45 @@ private fun ReadyScreen(state: UiState, batteryExempt: Boolean) {
         context.startActivity(
             Intent(android.provider.Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)
         )
+    }
+}
+
+/** 받은 클립보드: 마지막으로 받은 것과 알림 설정. 내용은 보여 주지 않는다. */
+@Composable
+private fun ReceiveCard(state: UiState) {
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("받은 클립보드", style = MaterialTheme.typography.titleMedium)
+            Text(
+                "다른 기기에서 복사한 텍스트·이미지가 이 기기 클립보드에 바로 들어갑니다. " +
+                    "붙여넣기로 쓰세요.",
+                style = MaterialTheme.typography.bodySmall,
+            )
+            val last = state.lastReceived
+            if (last == null) {
+                Text("아직 받은 것이 없습니다")
+            } else {
+                val time = java.text.DateFormat.getTimeInstance(java.text.DateFormat.SHORT)
+                    .format(java.util.Date(last.atMs))
+                val what = if (last.isImage) "이미지" else "텍스트"
+                Text(
+                    if (last.ok) "$time · '${last.fromName}'에서 받은 $what"
+                    else "$time · '${last.fromName}'에서 받은 $what (클립보드에 넣지 못함)",
+                    color = if (last.ok) MaterialTheme.colorScheme.onSurface
+                    else MaterialTheme.colorScheme.error,
+                )
+            }
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Text("받으면 알림 띄우기", modifier = Modifier.weight(1f))
+                Switch(
+                    checked = state.notifyOnReceive,
+                    onCheckedChange = { CoreController.setNotifyOnReceive(it) },
+                )
+            }
+        }
     }
 }
 

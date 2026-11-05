@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 받은 이미지 캐시만 연다 (ReceivedClips). 다른 파일은 FileProvider로 나가지 않는다. -->
+<paths>
+    <cache-path name="received" path="received/" />
+</paths>
