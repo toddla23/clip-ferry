@@ -1,0 +1,17 @@
+# iOS 푸시(APNs, F22)를 켤 때 compose.yml 위에 겹쳐 쓴다.
+#   docker compose -f deploy/compose.yml -f deploy/compose.apns.yml up -d --build
+# deploy/.env에 아래 값을 넣는다 (커밋하지 않는다). 키 파일은 컨테이너의 비루트 사용자가 읽도록 chmod 644.
+#   CF_APNS_KEY_FILE=/home/pi/apns/AuthKey_XXXXXXXXXX.p8
+#   CF_APNS_KEY_ID=XXXXXXXXXX
+#   CF_APNS_TEAM_ID=YYYYYYYYYY
+#   CF_APNS_SANDBOX=true      # Xcode에서 직접 설치한 개발 빌드는 true, TestFlight·App Store는 false
+services:
+  relay:
+    volumes:
+      - "${CF_APNS_KEY_FILE:?CF_APNS_KEY_FILE이 필요합니다}:/run/secrets/apns.p8:ro"
+    environment:
+      CF_RELAY_APNS_KEY: /run/secrets/apns.p8
+      CF_RELAY_APNS_KEY_ID: "${CF_APNS_KEY_ID:?CF_APNS_KEY_ID가 필요합니다}"
+      CF_RELAY_APNS_TEAM_ID: "${CF_APNS_TEAM_ID:?CF_APNS_TEAM_ID가 필요합니다}"
+      CF_RELAY_APNS_TOPIC: "${CF_APNS_TOPIC:-app.clipferry.ios}"
+      CF_RELAY_APNS_SANDBOX: "${CF_APNS_SANDBOX:-true}"

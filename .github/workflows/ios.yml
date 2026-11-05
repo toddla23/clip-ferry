@@ -1,0 +1,62 @@
+# iOS 앱 빌드 확인 (M4). 코어 xcframework → XcodeGen → 시뮬레이터용 xcodebuild (서명 없음).
+# 컴파일 오류는 `::error` 주석으로 남겨 Actions 화면(과 공개 API)에서 바로 보이게 한다.
+name: iOS
+
+on:
+  push:
+    branches: ["**"]
+    paths:
+      - "apps/ios/**"
+      - "ffi/**"
+      - "core/**"
+      - "scripts/build-ios-core.sh"
+      - ".github/workflows/ios.yml"
+  pull_request:
+    paths:
+      - "apps/ios/**"
+      - "ffi/**"
+      - "core/**"
+      - "scripts/build-ios-core.sh"
+      - ".github/workflows/ios.yml"
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: ios (simulator)
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Rust toolchain (rust-toolchain.toml)
+        run: |
+          rustup show
+          rustup target add aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios
+      - uses: Swatinem/rust-cache@v2
+      - name: 코어 xcframework와 Swift 바인딩
+        run: ./scripts/build-ios-core.sh --debug
+      - name: XcodeGen
+        run: |
+          brew install xcodegen
+          cd apps/ios && xcodegen generate
+      - name: xcodebuild (시뮬레이터, 서명 없음)
+        working-directory: apps/ios
+        run: |
+          set +e
+          xcodebuild -project ClipFerry.xcodeproj -scheme ClipFerry \
+            -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' \
+            CODE_SIGNING_ALLOWED=NO build > build.log 2>&1
+          status=$?
+          # "파일:줄:칸: error: 내용" → Actions 주석
+          grep -E '^/.*:[0-9]+:[0-9]+: error: ' build.log | sort -u | head -50 | while IFS= read -r line; do
+            file=$(echo "$line" | cut -d: -f1 | sed "s|^$GITHUB_WORKSPACE/||")
+            ln=$(echo "$line" | cut -d: -f2)
+            msg=$(echo "$line" | cut -d: -f5- | sed 's/^ //')
+            echo "::error file=$file,line=$ln::$msg"
+          done
+          grep -E 'error:|\*\* BUILD' build.log | grep -vE '^/.*:[0-9]+:[0-9]+: error: ' | sort -u | head -20 | while IFS= read -r line; do
+            echo "::error::$line"
+          done
+          tail -30 build.log
+          exit $status

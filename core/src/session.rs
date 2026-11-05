@@ -11,7 +11,7 @@ use tokio::time::timeout;
 use crate::api::{now_ms, Clip, ClipFerry, Error, GroupHealth, ImageClip, Incoming};
 use crate::crypto::DeviceId;
 use crate::envelope::Source;
-use crate::pb::ErrorCode;
+use crate::pb::{ErrorCode, Platform, PushTarget};
 use crate::transport::{Client, Event, TransportConfig};
 
 /// 셸이 구현하는 알림 창구.
@@ -54,6 +54,29 @@ pub enum SendError {
 
 type Pending = Arc<Mutex<HashMap<u32, oneshot::Sender<Result<u32, SendError>>>>>;
 type Subscribed = Arc<Mutex<HashSet<[u8; 32]>>>;
+type LastSentSlot = Arc<Mutex<Option<LastSent>>>;
+
+/// 보낸 클립을 들고 있는 시간. 이 안에 재전송 요청이 오면 다시 보낸다 (03-protocol 6절).
+pub const RESEND_KEEP_MS: u64 = 10 * 60 * 1000;
+
+/// 마지막으로 보낸 클립 (메모리에만).
+struct LastSent {
+    /// 받는 쪽이 알 수 있는 id: 텍스트 메시지 또는 `ImageStart`
+    msg_id: [u8; 16],
+    at_ms: u64,
+    content: LastContent,
+}
+
+#[derive(Clone)]
+enum LastContent {
+    Text(String),
+    Image {
+        bytes: Vec<u8>,
+        mime: String,
+        width: u32,
+        height: u32,
+    },
+}
 
 /// 릴레이에 붙어 있는 동안 살아 있는 세션. 드롭하면 연결을 닫는다.
 pub struct Session {
@@ -63,6 +86,7 @@ pub struct Session {
     subscribed: Subscribed,
     connected: watch::Receiver<bool>,
     online: watch::Receiver<usize>,
+    last_sent: LastSentSlot,
     task: JoinHandle<()>,
 }
 
@@ -116,6 +140,8 @@ impl ClipFerry {
         let task_pending = pending.clone();
         let task_client = client.clone();
         let task_subscribed = subscribed.clone();
+        let last_sent: LastSentSlot = Arc::default();
+        let task_last_sent = last_sent.clone();
         // 이미 따라잡기 응답을 보낸 (에포크, 기기 태그)
         let mut pushed: HashSet<(u64, Vec<u8>)> = HashSet::new();
 
@@ -163,6 +189,19 @@ impl ClipFerry {
                                     task_client.publish(m.channel_id.0, m.bytes, vec![]);
                                 }
                             }
+                            Ok(Incoming::ResendRequested { from, msg_id }) => {
+                                if let Some(content) = take_for_resend(&task_last_sent, &msg_id) {
+                                    tokio::spawn(resend(
+                                        app.clone(),
+                                        task_client.clone(),
+                                        task_pending.clone(),
+                                        from,
+                                        content,
+                                    ));
+                                }
+                            }
+                            // 푸시로만 온다. 세션에서는 할 일이 없다.
+                            Ok(Incoming::ImageAnnounced { .. }) => {}
                             Ok(Incoming::Nothing) | Err(_) => {}
                         }
                     }
@@ -208,8 +247,118 @@ impl ClipFerry {
             subscribed,
             connected,
             online,
+            last_sent,
             task,
         })
+    }
+}
+
+/// 요청이 마지막으로 보낸 것을 가리키고 아직 들고 있으면 다시 보낼 내용을 꺼낸다.
+/// `msg_id`가 비어 있으면 마지막 것.
+fn take_for_resend(slot: &LastSentSlot, msg_id: &[u8]) -> Option<LastContent> {
+    let last = slot.lock().unwrap();
+    let last = last.as_ref()?;
+    if now_ms().saturating_sub(last.at_ms) > RESEND_KEEP_MS {
+        return None;
+    }
+    if !msg_id.is_empty() && msg_id != last.msg_id {
+        return None;
+    }
+    Some(last.content.clone())
+}
+
+/// 요청한 기기에게만 다시 봉인해 보낸다. 실패해도 조용히 끝낸다(요청한 쪽이 기다리다 안내한다).
+async fn resend(
+    app: Arc<ClipFerry>,
+    client: Client,
+    pending: Pending,
+    to: DeviceId,
+    content: LastContent,
+) {
+    let Some(tag) = app.device_tag_of(&to) else {
+        return;
+    };
+    let messages = match content {
+        LastContent::Text(t) => app.seal_text(&t, now_ms()).map(|m| vec![m]),
+        LastContent::Image {
+            bytes,
+            mime,
+            width,
+            height,
+        } => app.seal_image(&bytes, &mime, width, height, now_ms()),
+    };
+    let Ok(messages) = messages else {
+        return;
+    };
+    for m in messages {
+        let sent = publish_paced(
+            &client,
+            &pending,
+            m.channel_id.0,
+            m.bytes,
+            vec![tag.0],
+            vec![],
+        );
+        if sent.await.is_err() {
+            return;
+        }
+    }
+}
+
+/// 게시하고 릴레이의 `Ack`(전달된 수)를 기다린다.
+async fn publish_once(
+    client: &Client,
+    pending: &Pending,
+    channel: [u8; 32],
+    bytes: Vec<u8>,
+    to: Vec<[u8; 16]>,
+    push: Vec<PushTarget>,
+) -> Result<u32, SendError> {
+    let (tx, rx) = oneshot::channel();
+    // 잠근 채로 게시하고 등록해서, 답이 먼저 도착해도 이벤트 처리가 등록을 기다리게 한다.
+    let id = {
+        let mut pending = pending.lock().unwrap();
+        let id = client.publish_with_push(channel, bytes, to, push);
+        pending.insert(id, tx);
+        id
+    };
+    match timeout(Duration::from_secs(10), rx).await {
+        Ok(Ok(result)) => result,
+        Ok(Err(_)) => Err(SendError::NotConnected),
+        Err(_) => {
+            pending.lock().unwrap().remove(&id);
+            Err(SendError::Timeout)
+        }
+    }
+}
+
+/// [`publish_once`]와 같되, 릴레이가 `RateLimited`로 거부하면 50 ms 쉬고 다시 게시한다(최대 100번).
+async fn publish_paced(
+    client: &Client,
+    pending: &Pending,
+    channel: [u8; 32],
+    bytes: Vec<u8>,
+    to: Vec<[u8; 16]>,
+    push: Vec<PushTarget>,
+) -> Result<u32, SendError> {
+    let mut tries = 0;
+    loop {
+        let result = publish_once(
+            client,
+            pending,
+            channel,
+            bytes.clone(),
+            to.clone(),
+            push.clone(),
+        )
+        .await;
+        match result {
+            Err(SendError::Relay(ErrorCode::RateLimited)) if tries < 100 => {
+                tries += 1;
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+            other => return other,
+        }
     }
 }
 
@@ -238,28 +387,32 @@ impl Session {
 
     /// 게시하고 릴레이의 `Ack`(전달된 수)를 기다린다.
     async fn publish(&self, channel: [u8; 32], bytes: Vec<u8>) -> Result<u32, SendError> {
-        let (tx, rx) = oneshot::channel();
-        // 잠근 채로 게시하고 등록해서, 답이 먼저 도착해도 이벤트 처리가 등록을 기다리게 한다.
-        let id = {
-            let mut pending = self.pending.lock().unwrap();
-            let id = self.client.publish(channel, bytes, vec![]);
-            pending.insert(id, tx);
-            id
-        };
-        match timeout(Duration::from_secs(10), rx).await {
-            Ok(Ok(result)) => result,
-            Ok(Err(_)) => Err(SendError::NotConnected),
-            Err(_) => {
-                self.pending.lock().unwrap().remove(&id);
-                Err(SendError::Timeout)
-            }
-        }
+        publish_once(&self.client, &self.pending, channel, bytes, vec![], vec![]).await
+    }
+
+    fn remember(&self, msg_id: [u8; 16], content: LastContent) {
+        *self.last_sent.lock().unwrap() = Some(LastSent {
+            msg_id,
+            at_ms: now_ms(),
+            content,
+        });
     }
 
     /// 텍스트를 그룹의 다른 기기들에게 보낸다. 릴레이가 실제로 전달한 수를 돌려준다.
+    /// 푸시 토큰이 있는 기기가 오프라인이면 릴레이가 푸시로 알린다. 보낸 것은 10분 들고 있다(재전송용).
     pub async fn send_text(&self, text: &str) -> Result<u32, SendError> {
         let sealed = self.app.seal_text(text, now_ms())?;
-        self.publish(sealed.channel_id.0, sealed.bytes).await
+        self.remember(sealed.msg_id, LastContent::Text(text.to_string()));
+        let push = self.app.push_targets();
+        publish_once(
+            &self.client,
+            &self.pending,
+            sealed.channel_id.0,
+            sealed.bytes,
+            vec![],
+            push,
+        )
+        .await
     }
 
     /// 이미지를 그룹의 다른 기기들에게 보낸다 (PNG·JPEG·GIF·WebP, 최대 20 MiB).
@@ -273,20 +426,63 @@ impl Session {
         height: u32,
     ) -> Result<u32, SendError> {
         let messages = self.app.seal_image(bytes, mime, width, height, now_ms())?;
+        if let Some(start) = messages.first() {
+            self.remember(
+                start.msg_id,
+                LastContent::Image {
+                    bytes: bytes.to_vec(),
+                    mime: mime.to_string(),
+                    width,
+                    height,
+                },
+            );
+        }
         let mut delivered = 0;
-        for m in messages {
-            let mut tries = 0;
-            delivered = loop {
-                match self.publish(m.channel_id.0, m.bytes.clone()).await {
-                    Err(SendError::Relay(ErrorCode::RateLimited)) if tries < 100 => {
-                        tries += 1;
-                        tokio::time::sleep(Duration::from_millis(50)).await;
-                    }
-                    other => break other?,
-                }
+        for (i, m) in messages.into_iter().enumerate() {
+            // 푸시는 시작에만 붙인다. 받는 쪽은 "이미지 도착"만 알리고 열 때 다시 받아 간다.
+            let push = if i == 0 {
+                self.app.push_targets()
+            } else {
+                vec![]
             };
+            delivered = publish_paced(
+                &self.client,
+                &self.pending,
+                m.channel_id.0,
+                m.bytes,
+                vec![],
+                push,
+            )
+            .await?;
         }
         Ok(delivered)
+    }
+
+    /// 이 기기의 푸시 토큰을 로스터에 적고 그룹에 알린다. 바뀐 것이 없으면 게시하지 않고 0.
+    pub async fn set_push_token(&self, platform: Platform, token: &str) -> Result<u32, SendError> {
+        match self.app.set_push_token(platform, token, now_ms())? {
+            Some(sealed) => self.publish(sealed.channel_id.0, sealed.bytes).await,
+            None => Ok(0),
+        }
+    }
+
+    /// 보낸 기기(`from`)에게만 재전송을 요청한다. `msg_id`가 비어 있으면 마지막 것.
+    /// 전달된 수를 돌려준다. 0이면 그 기기가 지금 오프라인이다.
+    pub async fn request_resend(&self, from: &DeviceId, msg_id: &[u8]) -> Result<u32, SendError> {
+        let tag = self
+            .app
+            .device_tag_of(from)
+            .ok_or(SendError::App(Error::UnknownDevice))?;
+        let sealed = self.app.seal_resend_request(msg_id, now_ms())?;
+        publish_once(
+            &self.client,
+            &self.pending,
+            sealed.channel_id.0,
+            sealed.bytes,
+            vec![tag.0],
+            vec![],
+        )
+        .await
     }
 
     /// 이 기기의 이름을 바꾸고 그룹에 알린다.

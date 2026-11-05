@@ -102,13 +102,24 @@ impl Client {
 
     /// 게시하고 `request_id`를 돌려준다. 결과는 `Event::Ack` / `Event::Error` / `Event::PublishFailed`.
     pub fn publish(&self, channel: [u8; 32], payload: Vec<u8>, to: Vec<[u8; 16]>) -> u32 {
+        self.publish_with_push(channel, payload, to, Vec::new())
+    }
+
+    /// [`Client::publish`]에 푸시 대상을 붙인다. 릴레이는 대상이 오프라인일 때만 푸시를 보낸다.
+    pub fn publish_with_push(
+        &self,
+        channel: [u8; 32],
+        payload: Vec<u8>,
+        to: Vec<[u8; 16]>,
+        push: Vec<pb::PushTarget>,
+    ) -> u32 {
         let request_id = self.next_request_id.fetch_add(1, Ordering::Relaxed);
         let _ = self.cmd_tx.send(Command::Publish(pb::Publish {
             request_id,
             channel_id: channel.to_vec(),
             payload,
             to: to.into_iter().map(|t| t.to_vec()).collect(),
-            push: Vec::new(),
+            push,
         }));
         request_id
     }

@@ -30,3 +30,9 @@ deploy/.env
 /apps/android/.kotlin/
 *.apk
 *.aab
+
+# iOS: 코어 빌드 산출물(scripts/build-ios-core.sh)과 XcodeGen이 만드는 프로젝트
+/apps/ios/Core/ClipFerryCore.xcframework/
+/apps/ios/Core/Generated/
+/apps/ios/Core/.headers/
+/apps/ios/ClipFerry.xcodeproj/

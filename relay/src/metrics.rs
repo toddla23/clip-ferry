@@ -14,6 +14,8 @@ pub struct Metrics {
     frames_in: AtomicU64,
     bytes_in: AtomicU64,
     delivered: AtomicU64,
+    pushed: AtomicU64,
+    push_failed: AtomicU64,
     errors: [AtomicU64; ERROR_SLOTS],
 }
 
@@ -26,6 +28,9 @@ pub struct Snapshot {
     pub frames_in: u64,
     pub bytes_in: u64,
     pub delivered: u64,
+    /// 푸시 서버가 받아 준 수 / 실패한 수
+    pub pushed: u64,
+    pub push_failed: u64,
     /// `ErrorCode` 값(0..8) 순서대로.
     pub errors: [u64; ERROR_SLOTS],
 }
@@ -53,6 +58,14 @@ impl Metrics {
         self.delivered.fetch_add(n as u64, Relaxed);
     }
 
+    pub fn pushed(&self) {
+        self.pushed.fetch_add(1, Relaxed);
+    }
+
+    pub fn push_failed(&self) {
+        self.push_failed.fetch_add(1, Relaxed);
+    }
+
     pub fn error(&self, code: ErrorCode) {
         if let Some(slot) = self.errors.get(code as usize) {
             slot.fetch_add(1, Relaxed);
@@ -67,6 +80,8 @@ impl Metrics {
             frames_in: self.frames_in.load(Relaxed),
             bytes_in: self.bytes_in.load(Relaxed),
             delivered: self.delivered.load(Relaxed),
+            pushed: self.pushed.load(Relaxed),
+            push_failed: self.push_failed.load(Relaxed),
             errors: std::array::from_fn(|i| self.errors[i].load(Relaxed)),
         }
     }
@@ -76,13 +91,15 @@ impl fmt::Display for Snapshot {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "connections={} open={} rejected={} frames_in={} bytes_in={} delivered={} errors={:?}",
+            "connections={} open={} rejected={} frames_in={} bytes_in={} delivered={} pushed={} push_failed={} errors={:?}",
             self.connections,
             self.open,
             self.rejected,
             self.frames_in,
             self.bytes_in,
             self.delivered,
+            self.pushed,
+            self.push_failed,
             self.errors
         )
     }

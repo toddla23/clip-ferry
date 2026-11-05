@@ -8,6 +8,7 @@ mod hub;
 mod limits;
 mod metrics;
 mod proxy;
+pub mod push;
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -25,6 +26,7 @@ use tokio::task::JoinHandle;
 
 use conn::run_connection;
 use hub::{IpGuard, Shared};
+use push::{Apns, ApnsConfig, PushSender};
 
 pub use metrics::Snapshot;
 
@@ -43,6 +45,8 @@ pub struct Config {
     pub trust_proxy: bool,
     /// 이 시간 동안 클라이언트에서 아무것도 오지 않으면 연결을 닫는다.
     pub idle_timeout: Duration,
+    /// APNs 푸시 게이트웨이 설정 (F22). 없으면 푸시를 보내지 않는다.
+    pub apns: Option<ApnsConfig>,
 }
 
 impl Default for Config {
@@ -55,6 +59,7 @@ impl Default for Config {
             max_conns_per_ip: 32,
             trust_proxy: false,
             idle_timeout: Duration::from_secs(60),
+            apns: None,
         }
     }
 }
@@ -83,11 +88,42 @@ impl RelayHandle {
     }
 }
 
-/// `listener`에서 릴레이를 시작한다.
+/// `listener`에서 릴레이를 시작한다. `config.apns`가 있으면 APNs로 푸시를 보낸다.
 pub fn spawn(listener: TcpListener, config: Config) -> RelayHandle {
+    spawn_inner(listener, config, None)
+}
+
+/// 푸시를 `sender`로 보내는 릴레이 (시험용 가짜 게이트웨이 등).
+pub fn spawn_with_push(
+    listener: TcpListener,
+    config: Config,
+    sender: Arc<dyn PushSender>,
+) -> RelayHandle {
+    spawn_inner(listener, config, Some(sender))
+}
+
+fn spawn_inner(
+    listener: TcpListener,
+    config: Config,
+    sender: Option<Arc<dyn PushSender>>,
+) -> RelayHandle {
     let addr = listener.local_addr().expect("바인드된 리스너");
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
-    let shared = Arc::new(Shared::new(config, shutdown_rx.clone()));
+    let metrics = Arc::new(metrics::Metrics::default());
+    let sender = sender.or_else(|| {
+        let apns = config.apns.clone()?;
+        match Apns::new(apns, metrics.clone()) {
+            Ok(a) => {
+                tracing::info!("push gateway: apns");
+                Some(Arc::new(Arc::new(a)) as Arc<dyn PushSender>)
+            }
+            Err(e) => {
+                tracing::error!("push gateway disabled: {e}");
+                None
+            }
+        }
+    });
+    let shared = Arc::new(Shared::new(config, shutdown_rx.clone(), metrics, sender));
 
     let app = Router::new()
         .route("/", get(ws_handler))

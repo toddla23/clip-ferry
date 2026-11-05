@@ -244,6 +244,7 @@ mod tests {
             from_name: "lap\x1btop".into(),
             text: "안녕 clip-ferry".into(),
             created_at_ms: 0,
+            msg_id: [0; 16],
         };
         assert_eq!(format_clip(&clip), "[lap?top] 안녕 clip-ferry");
     }

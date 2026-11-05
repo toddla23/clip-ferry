@@ -6,6 +6,7 @@ use std::sync::{Arc, Mutex};
 use tokio::sync::{mpsc, watch};
 
 use crate::metrics::Metrics;
+use crate::push::PushSender;
 use crate::Config;
 
 /// 연결로 내보낼 인코딩된 `RelayFrame`.
@@ -26,18 +27,26 @@ pub struct Hub {
 pub struct Shared {
     pub config: Config,
     pub hub: Mutex<Hub>,
-    pub metrics: Metrics,
+    pub metrics: Arc<Metrics>,
     pub shutdown: watch::Receiver<bool>,
+    /// 푸시 게이트웨이. 설정이 없으면 `None`이고 `push` 대상은 무시한다.
+    pub push: Option<Arc<dyn PushSender>>,
     next_conn: AtomicU64,
 }
 
 impl Shared {
-    pub fn new(config: Config, shutdown: watch::Receiver<bool>) -> Self {
+    pub fn new(
+        config: Config,
+        shutdown: watch::Receiver<bool>,
+        metrics: Arc<Metrics>,
+        push: Option<Arc<dyn PushSender>>,
+    ) -> Self {
         Self {
             config,
             hub: Mutex::new(Hub::default()),
-            metrics: Metrics::default(),
+            metrics,
             shutdown,
+            push,
             next_conn: AtomicU64::new(1),
         }
     }

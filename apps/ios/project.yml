@@ -1,0 +1,152 @@
+# clip-ferry iOS 프로젝트 정의 (XcodeGen). `xcodegen generate`로 ClipFerry.xcodeproj를 만든다.
+# 순서: ../../scripts/build-ios-core.sh → xcodegen generate → open ClipFerry.xcodeproj
+#
+# 타깃
+#   ClipFerry         앱 (SwiftUI): 페어링, 포그라운드 수신, 알림 탭 처리, App Intents(보내기)
+#   ClipFerryNotify   Notification Service Extension: 푸시 봉투를 열어 알림 문구를 바꾼다 (F22)
+#   ClipFerryShare    Share Extension: 공유 시트에서 보내기 (F24)
+#   ClipFerryWidgets  위젯 확장: 제어 센터 "클립보드 보내기" 버튼 (F23, iOS 18+)
+#
+# 모든 타깃이 App Group `group.app.clipferry`(state.bin·설정)와 키체인 그룹 `app.clipferry.shared`(비밀)를 같이 쓴다.
+# 팀 ID는 Xcode의 Signing & Capabilities에서 고르거나 아래 DEVELOPMENT_TEAM에 넣는다.
+name: ClipFerry
+options:
+  bundleIdPrefix: app.clipferry
+  deploymentTarget:
+    iOS: "17.0"
+  createIntermediateGroups: true
+  generateEmptyDirectories: true
+settings:
+  base:
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
+    SWIFT_VERSION: "5.10"
+    DEVELOPMENT_TEAM: ""
+    CODE_SIGN_STYLE: Automatic
+    IPHONEOS_DEPLOYMENT_TARGET: "17.0"
+    TARGETED_DEVICE_FAMILY: "1"
+    ENABLE_USER_SCRIPT_SANDBOXING: YES
+    # Rust 정적 라이브러리가 쓰는 시스템 라이브러리
+    OTHER_LDFLAGS: ["-lc++", "-framework", "Security", "-framework", "SystemConfiguration"]
+
+targetTemplates:
+  CoreUser:
+    dependencies:
+      - framework: Core/ClipFerryCore.xcframework
+        embed: false
+    sources:
+      - path: Shared
+      - path: Core/Generated
+        optional: true
+
+targets:
+  ClipFerry:
+    type: application
+    platform: iOS
+    templates: [CoreUser]
+    scheme: {}
+    sources:
+      - path: ClipFerry
+      - path: Intents
+    dependencies:
+      - target: ClipFerryNotify
+      - target: ClipFerryShare
+      - target: ClipFerryWidgets
+    entitlements:
+      path: ClipFerry/ClipFerry.entitlements
+      properties:
+        aps-environment: development
+        com.apple.security.application-groups: [group.app.clipferry]
+        keychain-access-groups: ["$(AppIdentifierPrefix)app.clipferry.shared"]
+    info:
+      path: ClipFerry/Info.plist
+      properties:
+        CFBundleDisplayName: clip-ferry
+        UILaunchScreen: {}
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: false
+        NSCameraUsageDescription: 페어링할 때 다른 기기에 뜬 QR 코드를 읽습니다. 사진은 저장하지 않습니다.
+        UIBackgroundModes: [remote-notification]
+        ClipFerryKeychainGroup: "$(AppIdentifierPrefix)app.clipferry.shared"
+        # 시험용 릴레이(ws://, Tailscale 등)에 붙을 수 있게 한다. 코어(Rust) 소켓에는 ATS가 걸리지 않지만 미리 열어 둔다.
+        NSAppTransportSecurity:
+          NSAllowsArbitraryLoads: true
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: app.clipferry.ios
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+
+  ClipFerryNotify:
+    type: app-extension
+    platform: iOS
+    templates: [CoreUser]
+    sources:
+      - path: Notify
+    entitlements:
+      path: Notify/Notify.entitlements
+      properties:
+        com.apple.security.application-groups: [group.app.clipferry]
+        keychain-access-groups: ["$(AppIdentifierPrefix)app.clipferry.shared"]
+    info:
+      path: Notify/Info.plist
+      properties:
+        CFBundleDisplayName: clip-ferry 알림
+        ClipFerryKeychainGroup: "$(AppIdentifierPrefix)app.clipferry.shared"
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.usernotifications.service
+          NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).NotificationService
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: app.clipferry.ios.notify
+
+  ClipFerryShare:
+    type: app-extension
+    platform: iOS
+    templates: [CoreUser]
+    sources:
+      - path: Share
+    entitlements:
+      path: Share/Share.entitlements
+      properties:
+        com.apple.security.application-groups: [group.app.clipferry]
+        keychain-access-groups: ["$(AppIdentifierPrefix)app.clipferry.shared"]
+    info:
+      path: Share/Info.plist
+      properties:
+        CFBundleDisplayName: clip-ferry
+        ClipFerryKeychainGroup: "$(AppIdentifierPrefix)app.clipferry.shared"
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.share-services
+          NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).ShareViewController
+          NSExtensionAttributes:
+            NSExtensionActivationRule:
+              NSExtensionActivationSupportsText: true
+              NSExtensionActivationSupportsWebURLWithMaxCount: 1
+              NSExtensionActivationSupportsImageWithMaxCount: 1
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: app.clipferry.ios.share
+
+  ClipFerryWidgets:
+    type: app-extension
+    platform: iOS
+    templates: [CoreUser]
+    sources:
+      - path: Widgets
+      - path: Intents
+    entitlements:
+      path: Widgets/Widgets.entitlements
+      properties:
+        com.apple.security.application-groups: [group.app.clipferry]
+        keychain-access-groups: ["$(AppIdentifierPrefix)app.clipferry.shared"]
+    info:
+      path: Widgets/Info.plist
+      properties:
+        CFBundleDisplayName: clip-ferry
+        ClipFerryKeychainGroup: "$(AppIdentifierPrefix)app.clipferry.shared"
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.widgetkit-extension
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: app.clipferry.ios.widgets
+        IPHONEOS_DEPLOYMENT_TARGET: "18.0"

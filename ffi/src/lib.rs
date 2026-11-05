@@ -6,15 +6,20 @@
 //! F16: 페어링(초대·참여·승인), 기기 목록(온라인 표시), 그룹 나가기, QR 칸 만들기.
 //! F17: 받은 텍스트·이미지를 셸에 넘긴다(셸이 클립보드에 쓴다).
 //! F18: 텍스트·이미지 보내기(셸이 클립보드에서 읽어 넘긴다).
+//! F22·F25: 푸시 토큰 등록, 푸시 페이로드 열기(iOS 알림 확장), 보낸 기기에 재전송 요청.
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use clip_ferry_core::api::{Clip, ClipFerry, Config, Error, GroupHealth, ImageClip};
+use clip_ferry_core::api::{
+    now_ms, Clip, ClipFerry, Config, Error, GroupHealth, ImageClip, Incoming,
+};
 use clip_ferry_core::crypto::DeviceId;
+use clip_ferry_core::envelope::Source;
 use clip_ferry_core::pair_flow::{self, InviteFlow, InviteUpdate, JoinFlow, JoinUpdate};
 use clip_ferry_core::pairing::Invite;
+use clip_ferry_core::pb;
 use clip_ferry_core::session::{ConnectionStatus, EventSink, SendError, Session};
 use clip_ferry_core::store::{SecretStore, StoreError};
 use clip_ferry_core::transfer;
@@ -155,6 +160,8 @@ pub struct StatusInfo {
 pub struct DeviceEntry {
     /// 기기 id 앞 4바이트(hex).
     pub id_short: String,
+    /// 기기 id 전체(hex 32자). `request_resend`에 넘긴다.
+    pub id_hex: String,
     pub name: String,
     pub is_self: bool,
     /// 지금 그룹 채널에 붙어 있다 (릴레이 Presence). 연결이 끊겨 있으면 모두 `false`.
@@ -222,6 +229,33 @@ impl EventSink for EventAdapter {
         *self.online.lock().unwrap() = online;
         self.events.on_online_count(count);
     }
+}
+
+/// 푸시 서비스 종류.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum PushPlatform {
+    Apns,
+    Fcm,
+}
+
+/// 푸시로 받은 봉투를 열어 본 결과 (`open_push`).
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Enum)]
+pub enum PushContent {
+    /// 텍스트가 다 들어 있었다.
+    Text {
+        from_name: String,
+        from_id: String,
+        text: String,
+        msg_id: Vec<u8>,
+    },
+    /// 이미지가 왔다는 알림. 앱을 열어 `request_resend`로 받아 온다.
+    Image {
+        from_name: String,
+        from_id: String,
+        msg_id: Vec<u8>,
+    },
+    /// 열 수 없었다(다른 그룹, 위조, 너무 오래됨, 중복, 다루지 않는 종류). 일반 알림으로 대신한다.
+    Unreadable,
 }
 
 /// 페어링 진행 알림. 초대하는 쪽과 참여하는 쪽이 같은 형태를 쓴다.
@@ -367,6 +401,7 @@ impl ClipFerryClient {
             .into_iter()
             .map(|d| DeviceEntry {
                 id_short: short_id(&d.device_id),
+                id_hex: hex32(&d.device_id),
                 online: online.contains(&d.device_id),
                 name: d.name,
                 is_self: d.is_self,
@@ -433,6 +468,75 @@ impl ClipFerryClient {
             sniffed.width,
             sniffed.height,
         ))?)
+    }
+
+    /// 연결될 때까지 최대 `timeout_ms` 기다린다. 연결되면 `true`. 세션이 없으면 바로 `false`.
+    pub fn wait_connected(&self, timeout_ms: u64) -> bool {
+        let Ok(session) = self.current_session() else {
+            return false;
+        };
+        self.runtime
+            .block_on(session.wait_connected(std::time::Duration::from_millis(timeout_ms)))
+    }
+
+    /// 이 기기의 푸시 토큰(APNs는 16진수)을 로스터에 적고 그룹에 알린다. 빈 문자열은 지운다.
+    /// 연결되어 있어야 한다. 바뀐 것이 없으면 아무것도 보내지 않고 0.
+    pub fn set_push_token(&self, platform: PushPlatform, token: String) -> Result<u32, FfiError> {
+        let session = self.current_session()?;
+        let platform = match platform {
+            PushPlatform::Apns => pb::Platform::Apns,
+            PushPlatform::Fcm => pb::Platform::Fcm,
+        };
+        Ok(self
+            .runtime
+            .block_on(session.set_push_token(platform, &token))?)
+    }
+
+    /// 푸시 페이로드(`p`, base64를 푼 봉투)를 연다. 연결이 없어도 된다(알림 확장에서 부른다).
+    pub fn open_push(&self, payload: Vec<u8>) -> PushContent {
+        match self.app.handle_deliver(&payload, Source::Push, now_ms()) {
+            Ok(Incoming::Clip(c)) => PushContent::Text {
+                from_name: c.from_name,
+                from_id: hex32(&c.from),
+                text: c.text,
+                msg_id: c.msg_id.to_vec(),
+            },
+            Ok(Incoming::ImageAnnounced {
+                from,
+                from_name,
+                msg_id,
+            }) => PushContent::Image {
+                from_name,
+                from_id: hex32(&from),
+                msg_id: msg_id.to_vec(),
+            },
+            _ => PushContent::Unreadable,
+        }
+    }
+
+    /// 페이로드 없는 푸시(`f`, base64를 푼 16바이트 태그)를 보낸 기기. 모르면 `None`.
+    pub fn device_for_tag(&self, tag: Vec<u8>) -> Option<DeviceEntry> {
+        let d = self.app.device_for_tag(&tag)?;
+        Some(DeviceEntry {
+            id_short: short_id(&d.device_id),
+            id_hex: hex32(&d.device_id),
+            online: self.online.lock().unwrap().contains(&d.device_id),
+            name: d.name,
+            is_self: d.is_self,
+        })
+    }
+
+    /// 보낸 기기(`from_id`, hex)에게만 재전송을 요청한다. `msg_id`가 비면 마지막 것.
+    /// 전달된 수를 돌려준다. 0이면 그 기기가 지금 오프라인이다.
+    /// 다시 보낸 내용은 평소처럼 `CoreEvents::on_text`·`on_image`로 온다.
+    pub fn request_resend(&self, from_id: String, msg_id: Vec<u8>) -> Result<u32, FfiError> {
+        let id = parse_hex32(&from_id).ok_or_else(|| FfiError::Failed {
+            reason: "기기 id가 올바르지 않습니다".into(),
+        })?;
+        let session = self.current_session()?;
+        Ok(self
+            .runtime
+            .block_on(session.request_resend(&DeviceId(id), &msg_id))?)
     }
 
     /// 이 그룹에 다른 기기를 초대한다. QR에는 `relay_url`이 들어가 참여하는 쪽이 같은 릴레이를 쓴다.
@@ -551,6 +655,21 @@ impl ClipFerryClient {
             }
         }
     }
+}
+
+fn hex32(id: &DeviceId) -> String {
+    id.0.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+fn parse_hex32(s: &str) -> Option<[u8; 16]> {
+    if s.len() != 32 || !s.is_ascii() {
+        return None;
+    }
+    let mut out = [0u8; 16];
+    for (i, b) in out.iter_mut().enumerate() {
+        *b = u8::from_str_radix(&s[i * 2..i * 2 + 2], 16).ok()?;
+    }
+    Some(out)
 }
 
 /// QR 코드 칸을 만든다. 데이터가 너무 길면 `None`.

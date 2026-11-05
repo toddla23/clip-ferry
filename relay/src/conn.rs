@@ -200,12 +200,19 @@ impl Conn {
                 .collect();
 
         let mut delivered = 0u32;
+        let mut notices = Vec::new();
         {
             let hub = self.shared.hub.lock().unwrap();
             if let Some(subs) = hub.channels.get(&channel) {
                 let Some(from) = subs.get(&self.id).map(|s| s.tag) else {
                     return self.error(p.request_id, ErrorCode::NotSubscribed);
                 };
+                // 지금 붙어 있지 않은 대상에게만 푸시한다 (03-protocol 5절).
+                if self.shared.push.is_some() && !p.push.is_empty() {
+                    let online: Vec<[u8; 16]> = subs.values().map(|s| s.tag).collect();
+                    let to: Vec<[u8; 16]> = targets.iter().copied().collect();
+                    notices = crate::push::select(&p.push, &online, &to, from, &p.payload);
+                }
                 let frame = encode(relay_frame::Kind::Deliver(pb::Deliver {
                     channel_id: channel.to_vec(),
                     from_tag: from.to_vec(),
@@ -223,10 +230,16 @@ impl Conn {
             }
         }
         self.shared.metrics.delivered(delivered as usize);
+        let pushed = notices.len() as u32;
+        if let Some(sender) = &self.shared.push {
+            for n in notices {
+                sender.send(n);
+            }
+        }
         let _ = self.tx.try_send(encode(relay_frame::Kind::Ack(pb::Ack {
             request_id: p.request_id,
             delivered,
-            pushed: 0,
+            pushed,
         })));
     }
 

@@ -104,3 +104,37 @@ docker compose -f deploy/compose.yml down                        # 중지
 | `CF_RELAY_MAX_BYTES_PER_MIN` | 64 MiB | 연결당 분당 바이트 |
 | `CF_RELAY_MAX_CONNS_PER_IP` | 32 | IP당 동시 연결 |
 | `CF_RELAY_TRUST_PROXY` | false | 프록시 뒤에서 `X-Forwarded-For`로 IP를 센다 (compose는 `CF_TRUST_PROXY`) |
+
+## iOS 푸시 켜기 (APNs, F22)
+
+앱이 꺼진 아이폰에도 PC 클립이 알림으로 가게 하려면 릴레이에 APNs 키를 준다. 릴레이는 토큰을 저장하지 않고, 대상 기기가 오프라인일 때만 Apple에 알림을 보낸다(03-protocol 5절).
+
+1. Apple 개발자 계정 → Certificates, Identifiers & Profiles → **Keys** → `+` → "Apple Push Notifications service (APNs)" 체크 → 만들고 `AuthKey_<Key ID>.p8`을 받는다(한 번만 받을 수 있다). Key ID와 팀 ID(오른쪽 위 계정 이름 아래)를 적어 둔다.
+2. Pi로 옮기고 컨테이너가 읽을 수 있게 한다.
+   ```sh
+   mkdir -p ~/apns && mv AuthKey_*.p8 ~/apns/ && chmod 644 ~/apns/AuthKey_*.p8
+   ```
+3. `deploy/.env`에 더한다.
+   ```sh
+   cat >> deploy/.env <<'ENV'
+   CF_APNS_KEY_FILE=/home/<사용자>/apns/AuthKey_XXXXXXXXXX.p8
+   CF_APNS_KEY_ID=XXXXXXXXXX
+   CF_APNS_TEAM_ID=YYYYYYYYYY
+   CF_APNS_SANDBOX=true
+   ENV
+   ```
+   - Xcode에서 직접 설치한 앱(개발 빌드)은 `CF_APNS_SANDBOX=true`, TestFlight·App Store 빌드는 `false`.
+4. 겹쳐서 다시 띄운다.
+   ```sh
+   docker compose -f deploy/compose.yml -f deploy/compose.apns.yml up -d --build
+   docker compose -f deploy/compose.yml logs | grep "push gateway"   # "push gateway: apns"가 보이면 켜진 것
+   ```
+- 1분마다 남는 집계 로그의 `pushed=`·`push_failed=`로 보낸 수·실패 수를 본다. 토큰·내용은 로그에 남지 않는다.
+
+| 변수 (릴레이) | compose 변수 | 설명 |
+|---|---|---|
+| `CF_RELAY_APNS_KEY` | `CF_APNS_KEY_FILE` | `.p8` 키 파일 경로 |
+| `CF_RELAY_APNS_KEY_ID` | `CF_APNS_KEY_ID` | 키 ID |
+| `CF_RELAY_APNS_TEAM_ID` | `CF_APNS_TEAM_ID` | 팀 ID |
+| `CF_RELAY_APNS_TOPIC` | `CF_APNS_TOPIC` | 앱 번들 ID (기본 `app.clipferry.ios`) |
+| `CF_RELAY_APNS_SANDBOX` | `CF_APNS_SANDBOX` | 샌드박스 서버로 보낸다 (개발 빌드) |

@@ -27,12 +27,40 @@ struct Args {
     /// 리버스 프록시 뒤에서 `X-Forwarded-For`를 믿는다 (루프백·사설 주소에서 직접 온 연결만)
     #[arg(long, env = "CF_RELAY_TRUST_PROXY")]
     trust_proxy: bool,
+    /// APNs 인증 키 파일(.p8). 주면 iOS 푸시를 보낸다 (F22). 아래 key-id·team-id도 필요하다
+    #[arg(long, env = "CF_RELAY_APNS_KEY")]
+    apns_key: Option<std::path::PathBuf>,
+    /// APNs 키 ID (Apple 개발자 계정의 Keys 화면)
+    #[arg(long, env = "CF_RELAY_APNS_KEY_ID")]
+    apns_key_id: Option<String>,
+    /// Apple 개발자 팀 ID
+    #[arg(long, env = "CF_RELAY_APNS_TEAM_ID")]
+    apns_team_id: Option<String>,
+    /// iOS 앱 번들 ID
+    #[arg(long, env = "CF_RELAY_APNS_TOPIC", default_value = "app.clipferry.ios")]
+    apns_topic: String,
+    /// 샌드박스 APNs로 보낸다 (Xcode에서 직접 설치한 개발 빌드)
+    #[arg(long, env = "CF_RELAY_APNS_SANDBOX")]
+    apns_sandbox: bool,
 }
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt().with_target(false).init();
     let args = Args::parse();
+
+    let apns = match (args.apns_key, args.apns_key_id, args.apns_team_id) {
+        (Some(path), Some(key_id), Some(team_id)) => Some(clip_ferry_relay::push::ApnsConfig {
+            key_pem: std::fs::read(&path)
+                .map_err(|e| anyhow::anyhow!("APNs 키 파일을 읽을 수 없습니다: {e}"))?,
+            key_id,
+            team_id,
+            topic: args.apns_topic,
+            sandbox: args.apns_sandbox,
+        }),
+        (None, None, None) => None,
+        _ => anyhow::bail!("--apns-key, --apns-key-id, --apns-team-id는 함께 줘야 합니다"),
+    };
 
     let config = Config {
         max_frame_bytes: args.max_frame_bytes,
@@ -41,6 +69,7 @@ async fn main() -> anyhow::Result<()> {
         max_bytes_per_min: args.max_bytes_per_min,
         max_conns_per_ip: args.max_conns_per_ip,
         trust_proxy: args.trust_proxy,
+        apns,
         ..Config::default()
     };
     let listener = TcpListener::bind(&args.listen).await?;

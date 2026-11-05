@@ -32,11 +32,11 @@
 | F19 | Android 공유 · 텍스트 선택 메뉴 | F18 | 완료 | 실기기 확인 통과(갤러리 공유 한 장·여러 장·HEIC, 텍스트 선택 메뉴 `PC로 보내기`, 텍스트 공유, 직접 공유 바로가기 `다른 기기로`, 자동 연결, 화면 회전 시 한 번만), 세 OS CI 통과, PR #23 머지. 확인 문서: `todo/F19-확인.md` |
 | F20 | 푸시 게이트웨이(FCM) | F19 | 보류 | 사용자 결정(2026-11-05): Android는 포그라운드 서비스로 충분. D-017 |
 | **M4** | **iOS** | | | |
-| F21 | iOS 셸 + 페어링 + 포그라운드 수신 | F19 | 대기 | |
-| F22 | APNs + NSE | F21 | 대기 | |
-| F23 | App Intents 보내기 | F22 | 대기 | |
-| F24 | Share Extension | F23 | 대기 | |
-| F25 | iOS 이미지 수신 | F24, O-01 | 대기 | |
+| F21 | iOS 셸 + 페어링 + 포그라운드 수신 | F19 | 진행중 | 구현(CI 시뮬레이터 빌드로만 확인), Mac 빌려 F25까지 한 번에 확인. 확인 문서: `todo/F21-F25-확인.md` |
+| F22 | APNs + NSE | F21 | 진행중 | 릴레이 APNs 게이트웨이·푸시 토큰·NSE 구현. 코어·릴레이 테스트 통과(가짜 푸시 서버). 실제 APNs는 Mac 시험에서 |
+| F23 | App Intents 보내기 | F22 | 진행중 | `SendClipboardIntent`·App Shortcuts·제어 센터 버튼 구현 |
+| F24 | Share Extension | F23 | 진행중 | 텍스트·URL·이미지 공유 확장 구현 |
+| F25 | iOS 이미지 수신 | F24, O-01 | 진행중 | O-01 기본안 A(D-016): 보낸 기기가 10분 보관 → `ResendRequest`로 요청한 기기에게만 재전송. 코어·릴레이 테스트 통과 |
 | **M5** | **확장** | | | |
 | F26 | 다중 릴레이 (NATS) | F14 | 대기 | |
 | F27 | 관측 · 남용 방지 | F26 | 대기 | |
@@ -50,6 +50,7 @@
 
 새 항목을 위에 추가한다. 형식: `YYYY-MM-DD F00 — 한 줄`
 
+- 2026-11-05 F21~F25 — 코어: 푸시 토큰(`set_push_token`, 로스터 `Member.push`), 푸시 대상(`push_targets`, 텍스트·`ImageStart`에만), 재전송(`seal_resend_request`, `Incoming::ResendRequested`, `Session`이 마지막 클립 10분 보관 → 요청한 기기에게만), 푸시 `ImageStart`는 `ImageAnnounced`. 릴레이: APNs 게이트웨이(`push.rs`, 오프라인 대상만, ES256 JWT, `deploy/compose.apns.yml`). FFI: `set_push_token`·`open_push`·`device_for_tag`·`request_resend`·`wait_connected`, 정적 라이브러리. iOS 앱(`apps/ios`, XcodeGen): 앱·알림 확장·공유 확장·위젯(제어 센터), 키체인 그룹·App Group, `scripts/build-ios-core.sh`, CI `ios.yml`. 진행중
 - 2026-11-05 F31 — 배포 워크플로 `release.yml`(v* 태그 → Releases: Windows NSIS, macOS 유니버설 dmg, Linux deb·AppImage, Android 서명 APK), Android 배포 서명 설정(환경 변수, 없으면 디버그 키), 배포 키 생성(저장소 밖), 문서 `docs/07-release.md`. Windows에서 `tauri build`(NSIS)·`assembleRelease`(배포 키 서명 확인) 성공. 진행중
 - 2026-11-05 F20 — 보류(사용자 결정, D-017). O-01은 기본안 A(D-016), iOS 번들 ID `app.clipferry.ios`(O-03)
 - 2026-11-05 F19 — PR #23 머지(세 OS CI 통과), 완료 처리

@@ -80,6 +80,10 @@ pub enum Error {
     Secret(#[from] StoreError),
     #[error("로컬 상태 파일 입출력 오류")]
     Io,
+    #[error("푸시 토큰이 너무 깁니다")]
+    BadPushToken,
+    #[error("메시지 id가 올바르지 않습니다")]
+    BadMsgId,
 }
 
 impl From<StateFileError> for Error {
@@ -169,6 +173,8 @@ pub struct Clip {
     pub from_name: String,
     pub text: String,
     pub created_at_ms: u64,
+    /// 이 메시지의 id. 재전송 요청(`ResendRequest`)에 쓴다.
+    pub msg_id: [u8; 16],
 }
 
 /// 받은 이미지. 크기와 해시를 확인한 원본 바이트다(디코딩은 셸이 한다).
@@ -198,6 +204,18 @@ pub enum Incoming {
     Removed,
     /// 돌아온 기기의 `EpochQuery`에 대한 응답. 각 메시지를 해당 채널에 게시한다.
     Replies(Vec<SealedMessage>),
+    /// 푸시로 받은 `ImageStart` (청크는 푸시로 오지 않는다). 셸은 "이미지 도착"을 알리고,
+    /// 사용자가 열면 보낸 기기에 재전송을 요청한다 (03-protocol 6절, D-016).
+    ImageAnnounced {
+        from: DeviceId,
+        from_name: String,
+        msg_id: [u8; 16],
+    },
+    /// 다른 기기가 이 기기가 보낸 클립을 다시 보내 달라고 했다. `msg_id`가 비어 있으면 마지막 것.
+    ResendRequested {
+        from: DeviceId,
+        msg_id: Vec<u8>,
+    },
     /// 처리할 것이 없는 메시지 (아직 다루지 않는 종류 등).
     Nothing,
 }
@@ -721,6 +739,12 @@ impl ClipFerry {
                 .unwrap_or_default()
         };
         match got.kind {
+            // 푸시에는 시작만 담긴다. 조립하지 않고 도착만 알린다.
+            Kind::ImageStart(_) if source == Source::Push => Ok(Incoming::ImageAnnounced {
+                from: got.sender,
+                from_name: name_of(dev),
+                msg_id: got.msg_id,
+            }),
             Kind::ImageStart(s) => match dev.assembler.start(got.sender, &s, now_ms) {
                 Ok(()) => Ok(Incoming::Nothing),
                 Err(_) => Err(Self::drop_image(dev)),
@@ -745,6 +769,7 @@ impl ClipFerry {
                     from_name,
                     text: t.text,
                     created_at_ms: got.created_at_ms,
+                    msg_id: got.msg_id,
                 }))
             }
             Kind::Control(pb::Control {
@@ -766,6 +791,12 @@ impl ClipFerry {
             Kind::Control(pb::Control {
                 kind: Some(C::EpochQuery(_)),
             }) => Ok(self.handle_query(dev, got.sender, got.epoch, now_ms)),
+            Kind::Control(pb::Control {
+                kind: Some(C::Resend(r)),
+            }) if got.epoch == current_epoch => Ok(Incoming::ResendRequested {
+                from: got.sender,
+                msg_id: r.msg_id,
+            }),
             _ => Ok(Incoming::Nothing),
         }
     }
@@ -883,6 +914,7 @@ mod epochs;
 mod group_tests;
 #[cfg(test)]
 mod image_tests;
+mod push;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]

@@ -290,19 +290,24 @@ enum ErrorCode { ERROR_UNSPECIFIED = 0; BAD_FRAME = 1; TOO_LARGE = 2; RATE_LIMIT
 - 연결당 속도 제한은 토큰 버킷(초당 프레임 수, 분당 바이트 수). 넘으면 `RATE_LIMITED`(연결 유지).
 - IP당 동시 연결 한도를 넘으면 업그레이드 단계에서 HTTP 429. (리버스 프록시 뒤에서는 프록시 IP로 센다 — F14b에서 다룬다.)
 - `Presence`는 구독·구독 해지·연결 종료로 채널 구성이 바뀔 때마다 그 채널의 모든 구독자에게 간다.
-- `push`는 F20 전까지 무시되고 `Ack.pushed`는 항상 0.
+- 푸시 게이트웨이(F22, `relay/src/push.rs`): APNs 설정이 있을 때만 켜진다(`deploy/README.md`). `push` 대상 중 그 채널에 그 태그로 붙어 있지 않은 것, `to`가 있으면 그 안의 것만, APNs·16진수 토큰만, 게시당 16개까지 보낸다. FCM 대상은 F20 보류(D-017)로 무시한다. `Ack.pushed`는 보내려고 넘긴 수다(Apple의 수락 여부는 집계 `pushed`·`push_failed`로만 센다).
+- APNs 본문: `{"aps":{"alert":{"title":"clip-ferry","body":"새 클립이 도착했습니다"},"mutable-content":1,"sound":"default","thread-id":"clip"},"f":<보낸 기기 태그 base64>,"p":<봉투 base64>}`. 봉투 base64가 3,000자를 넘으면 `p` 대신 `"need_open":true`. iOS 알림 확장이 `p`를 열어 문구를 바꾼다. 인증은 `.p8` 키의 ES256 JWT(50분마다 새로), `apns-expiration`은 1시간 뒤.
+- 보내는 쪽(`Session`)은 로스터에서 토큰이 있는 다른 구성원을 `push`로 붙인다. 텍스트와 `ImageStart`에만 붙이고 이미지 청크·제어 메시지에는 붙이지 않는다. 푸시로 받은 `ImageStart`는 조립하지 않고 `Incoming::ImageAnnounced`로 알린다.
+- 푸시 토큰은 각 기기가 자기 `Member.push`에 적어 `RosterUpdate`로 알린다(`set_push_token`, 빈 토큰은 지움, 256바이트까지).
 - 클라이언트 재연결 백오프는 1s에서 시작해 두 배씩 늘어 최대 60s. 끊긴 동안의 `Publish`는 쌓지 않고 `PublishFailed`로 알린다.
 - `wss://`(TLS) 클라이언트는 `rustls`(ring) + 번들 루트 인증서(webpki-roots)로 지원한다(F14). 서버는 TLS를 직접 하지 않고 앞단(프록시·호스팅)이 종단한다. 실제 TLS 서버와의 접속은 인증서를 받은 뒤 확인한다.
 
 ---
 
-## 6. 재전송 요청 (초안, 열린 질문 O-01과 연결)
+## 6. 재전송 요청 (D-016, O-01 기본안 A)
 
 푸시 알림에 내용을 다 못 담은 경우(긴 텍스트, 이미지):
 
 - 보낸 기기는 **마지막으로 보낸 클립 1개**를 메모리에 10분간 보관한다(서버가 아니라 기기).
-- 받는 기기는 사용자가 알림을 눌러 앱이 열리면 `ResendRequest{msg_id}`를 채널에 게시한다.
-- 보낸 기기가 온라인이고 아직 보관 중이면 해당 기기에게만(`to`) 다시 보낸다.
+- 받는 기기는 사용자가 알림을 눌러 앱이 열리면 `ResendRequest{msg_id}`를 **보낸 기기에게만**(`to` = 그 기기 태그) 게시한다. `Ack.delivered == 0`이면 보낸 기기가 오프라인이다("보낸 기기가 오프라인입니다").
+- `msg_id`는 텍스트 메시지 또는 `ImageStart`의 id다. 페이로드 없는 도착 알림(`need_open`)은 id를 모르므로 **빈 `msg_id` = 마지막으로 보낸 것**을 뜻한다. 그 밖의 길이는 보내지 않는다.
+- 보낸 기기는 현재 에포크의 요청이고, 보관 중인 것과 `msg_id`가 같거나(빈 것이면 무조건) 10분이 안 지났으면 새로 봉인해 요청한 기기에게만(`to`) 다시 보낸다. 아니면 아무것도 하지 않는다(받는 쪽은 20초 기다린 뒤 "더 이상 남아 있지 않습니다"라고 안내한다).
+- 구현: `ClipFerry::seal_resend_request`, `Incoming::ResendRequested`, `Session::request_resend`(core/src/session.rs).
 
 ---
 
