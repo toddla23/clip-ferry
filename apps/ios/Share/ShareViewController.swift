@@ -77,7 +77,7 @@ final class ShareViewController: UIViewController {
 
     private func loadImageData(_ p: NSItemProvider) async -> Data? {
         // 파일 그대로 받는 것이 가장 가볍다. 안 되면 데이터, 마지막으로 UIImage.
-        if let data = try? await p.loadDataRepresentation(for: .image) {
+        if let data = try? await p.cfLoadData(UTType.image.identifier) {
             return data
         }
         let item = try? await p.loadItem(forTypeIdentifier: UTType.image.identifier)
@@ -95,9 +95,9 @@ final class ShareViewController: UIViewController {
 }
 
 private extension NSItemProvider {
-    func loadDataRepresentation(for type: UTType) async throws -> Data {
+    func cfLoadData(_ typeIdentifier: String) async throws -> Data {
         try await withCheckedThrowingContinuation { cont in
-            _ = loadDataRepresentation(forTypeIdentifier: type.identifier) { data, error in
+            _ = loadDataRepresentation(forTypeIdentifier: typeIdentifier) { data, error in
                 if let data {
                     cont.resume(returning: data)
                 } else {

@@ -110,7 +110,7 @@ private struct HomeView: View {
             Section("기기 (\(model.devices.count))") {
                 ForEach(model.devices, id: \.idHex) { d in
                     HStack {
-                        Circle().fill(d.online ? .green : .gray.opacity(0.4)).frame(width: 8, height: 8)
+                        Circle().fill(d.online ? Color.green : Color.gray.opacity(0.4)).frame(width: 8, height: 8)
                         Text(d.name)
                         if d.isSelf { Text("이 기기").font(.caption).foregroundStyle(.secondary) }
                         Spacer()
