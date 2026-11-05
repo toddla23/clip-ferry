@@ -35,7 +35,16 @@ jobs:
           rustup target add aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios
       - uses: Swatinem/rust-cache@v2
       - name: 코어 xcframework와 Swift 바인딩
-        run: ./scripts/build-ios-core.sh --debug
+        run: |
+          set -o pipefail
+          if ! ./scripts/build-ios-core.sh --debug 2>&1 | tee core.log; then
+            # 로그 원문은 로그인해야 보이므로 오류 줄과 마지막 줄을 주석으로 남긴다.
+            grep -E 'error|Error|unbound|No such' core.log | tail -15 | while IFS= read -r line; do
+              echo "::error::$line"
+            done
+            tail -5 core.log | while IFS= read -r line; do echo "::error::(tail) $line"; done
+            exit 1
+          fi
       - name: XcodeGen
         run: |
           brew install xcodegen

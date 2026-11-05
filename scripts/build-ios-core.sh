@@ -9,9 +9,10 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+# macOS 기본 bash(3.2)는 `set -u`에서 빈 배열을 펼치면 멈추므로 문자열로 둔다.
 profile_dir=release
-profile_flag=(--release)
-if [[ "${1:-}" == "--debug" ]]; then profile_dir=debug; profile_flag=(); fi
+profile_flag=--release
+if [[ "${1:-}" == "--debug" ]]; then profile_dir=debug; profile_flag=""; fi
 
 out=apps/ios/Core
 gen="$out/Generated"
@@ -21,7 +22,8 @@ mkdir -p "$gen" "$headers"
 
 export IPHONEOS_DEPLOYMENT_TARGET=17.0
 for target in aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios; do
-  cargo build -p clip-ferry-ffi --lib --target "$target" "${profile_flag[@]}"
+  # shellcheck disable=SC2086
+  cargo build -p clip-ferry-ffi --lib --target "$target" $profile_flag
 done
 
 lib=libclip_ferry_ffi.a
@@ -33,7 +35,7 @@ lipo -create \
 
 # 바인딩은 라이브러리 안의 메타데이터에서 만든다 (어느 타깃이든 같다).
 cargo run -q -p uniffi-bindgen -- generate \
-  --library "target/aarch64-apple-ios/$profile_dir/$lib" \
+  --library "target/aarch64-apple-ios/$profile_dir/libclip_ferry_ffi.dylib" \
   --language swift --out-dir "$gen"
 
 # xcframework의 헤더 폴더: C 헤더 + module.modulemap (Swift에서 `import clip_ferry_ffiFFI`)
