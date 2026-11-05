@@ -46,6 +46,9 @@ data class PairUi(
     val message: String? = null,
 )
 
+/** 마지막으로 받은 것의 요약. 내용은 담지 않는다. */
+data class Received(val fromName: String, val isImage: Boolean, val ok: Boolean, val atMs: Long)
+
 /** 화면과 알림이 읽는 상태. 비밀값은 없다. */
 data class UiState(
     val link: Link = Link.STOPPED,
@@ -59,6 +62,10 @@ data class UiState(
     val relayUrl: String = "",
     /** 백그라운드 연결 유지(포그라운드 서비스)를 켜 두었는가. */
     val serviceEnabled: Boolean = true,
+    /** 받은 내용을 클립보드에 넣을 때 알림을 띄우는가. */
+    val notifyOnReceive: Boolean = true,
+    /** 마지막으로 받은 것 (이 앱이 켜진 뒤). 내용은 담지 않는다. */
+    val lastReceived: Received? = null,
 ) {
     /** 그룹이 있다(제거된 그룹 포함). 없으면 첫 실행 화면을 보여 준다. */
     val hasGroup: Boolean get() = status?.epoch != null
@@ -89,9 +96,11 @@ object CoreController : CoreEvents {
     fun init(context: Context) {
         appContext = context.applicationContext
         settings = Settings(appContext)
+        ReceivedClips.init(appContext, settings)
         mutableState.value = UiState(
             relayUrl = settings.relayUrl,
             serviceEnabled = settings.serviceEnabled,
+            notifyOnReceive = settings.notifyOnReceive,
         )
         try {
             ensureOpen()
@@ -183,6 +192,18 @@ object CoreController : CoreEvents {
     fun setServiceEnabled(enabled: Boolean) {
         settings.serviceEnabled = enabled
         mutableState.update { it.copy(serviceEnabled = enabled) }
+    }
+
+    fun setNotifyOnReceive(enabled: Boolean) {
+        settings.notifyOnReceive = enabled
+        mutableState.update { it.copy(notifyOnReceive = enabled) }
+    }
+
+    /** [ReceivedClips]가 클립보드에 쓴 뒤 부른다. 화면의 "마지막으로 받은 것"을 고친다. */
+    fun noteReceived(fromName: String, isImage: Boolean, ok: Boolean) {
+        mutableState.update {
+            it.copy(lastReceived = Received(fromName, isImage, ok, System.currentTimeMillis()))
+        }
     }
 
     // ------------------------------------------------------- 첫 실행 · 그룹
@@ -373,6 +394,14 @@ object CoreController : CoreEvents {
 
     override fun onChanged() {
         refresh()
+    }
+
+    override fun onText(fromName: String, text: String) {
+        ReceivedClips.onText(fromName, text)
+    }
+
+    override fun onImage(fromName: String, mime: String, bytes: ByteArray) {
+        ReceivedClips.onImage(fromName, mime, bytes)
     }
 }
 
