@@ -926,6 +926,8 @@ name = "clip-ferry-ffi"
 version = "0.1.0"
 dependencies = [
  "clip-ferry-core",
+ "clip-ferry-relay",
+ "qrcode",
  "tempfile",
  "thiserror 1.0.69",
  "tokio",

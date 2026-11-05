@@ -11,9 +11,12 @@ crate-type = ["cdylib", "lib"]
 
 [dependencies]
 clip-ferry-core = { path = "../core" }
+qrcode = { version = "0.14", default-features = false }
 thiserror = "1"
 tokio = { workspace = true, features = ["rt-multi-thread"] }
 uniffi = "0.32"
 
 [dev-dependencies]
+clip-ferry-relay = { path = "../relay" }
 tempfile = "3"
+tokio = { workspace = true, features = ["net"] }

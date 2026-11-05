@@ -85,7 +85,7 @@ pub trait SecretStore: Send + Sync {         // 셸이 구현 (플랫폼 보안 
 - `ClipFerryClient` 객체가 tokio 런타임과 릴레이 세션을 쥐고, 셸에는 동기 호출(`open`, `init_device`, `create_group`, `status`, `start`, `stop`)과 콜백(`CoreEvents`: 연결 상태·온라인 기기 수·변경 알림)을 준다. 비밀 저장소는 셸이 구현하는 `SecretVault` 콜백이다.
 - 오류는 `FfiError`(`Removed` / `Failed{reason}`)로 단순화한다.
 - 바인딩 생성기는 `tools/uniffi-bindgen`. 라이브러리 모드로 빌드된 `.so`의 메타데이터에서 Kotlin을 만든다.
-- 페어링(F16)·클립보드 송수신(F17~)은 같은 방식으로 이 크레이트에 추가한다.
+- F16에서 페어링(`start_invite`·`decide_invite`·`start_join`·`cancel_pairing`, 결과는 `PairListener` 콜백), 기기 목록(`devices`, Presence로 온라인 표시), `leave_group`, QR 칸(`qr_matrix`, 데스크톱과 같은 `qrcode` 크레이트)을 더했다. 클립보드 송수신(F17~)도 같은 방식으로 이 크레이트에 추가한다.
 
 ### CLI (`tools/cli/`, 크레이트 `clip-ferry-cli`)
 
@@ -100,7 +100,7 @@ pub trait SecretStore: Send + Sync {         // 셸이 구현 (플랫폼 보안 
 | Android (`apps/android/`) | Kotlin + Jetpack Compose | 포그라운드 서비스, 빠른 설정 타일, 알림 버튼, 공유·텍스트 선택 메뉴, QR 스캔, FCM |
 | iOS (`apps/ios/`) | Swift + SwiftUI | 포그라운드 수신, App Intents, Share Extension, Notification Service Extension, QR 스캔, APNs |
 
-Android 빌드 메모: 필요한 것은 Android Studio(SDK 플랫폼·NDK·CMake), 환경 변수 `ANDROID_HOME`·`ANDROID_NDK_HOME`, `rustup target add aarch64-linux-android x86_64-linux-android`, `cargo install cargo-ndk --locked`. `scripts/build-android-core.ps1`(Windows) 또는 `.sh`(macOS·Linux)가 `.so`를 `apps/android/app/src/main/jniLibs/`에, Kotlin 바인딩을 `app/src/main/java/uniffi/`에 만든다(둘 다 git에 넣지 않는다). 그 뒤 Android Studio로 열거나 `apps/android`에서 `./gradlew installDebug`. 처음 받은 저장소는 코어 스크립트를 먼저 한 번 돌려야 Gradle 빌드가 된다. Android 셸의 파일은 `KeystoreVault`(Keystore 비밀 저장소), `CoreController`(코어 ↔ 화면 상태), `ClipFerryService`(포그라운드 서비스·네트워크 변경 감지), `MainActivity`(Compose 화면).
+Android 빌드 메모: 필요한 것은 Android Studio(SDK 플랫폼·NDK·CMake), 환경 변수 `ANDROID_HOME`·`ANDROID_NDK_HOME`, `rustup target add aarch64-linux-android x86_64-linux-android`, `cargo install cargo-ndk --locked`. `scripts/build-android-core.ps1`(Windows) 또는 `.sh`(macOS·Linux)가 `.so`를 `apps/android/app/src/main/jniLibs/`에, Kotlin 바인딩을 `app/src/main/java/uniffi/`에 만든다(둘 다 git에 넣지 않는다). 그 뒤 Android Studio로 열거나 `apps/android`에서 `./gradlew installDebug`. 처음 받은 저장소는 코어 스크립트를 먼저 한 번 돌려야 Gradle 빌드가 된다. Android 셸의 파일은 `KeystoreVault`(Keystore 비밀 저장소), `CoreController`(코어 ↔ 화면 상태), `ClipFerryService`(포그라운드 서비스·네트워크 변경 감지), `MainActivity`(Compose 화면: 첫 실행·메인), `PairingScreens`(참여·초대·확인 숫자·기기 목록), `QrScanner`(CameraX + ML Kit 번들 모델, 기기 안에서만 인식).
 
 데스크톱 빌드 메모: Tauri 매크로가 컴파일 때 `apps/desktop/dist`(UI 빌드 결과)를 읽는다. 새로 받은 저장소에서는 `cd apps/desktop && npm ci && npm run build`를 먼저 한 번 해야 `cargo build/test --workspace`가 된다(CI도 같은 순서). `src-tauri`는 `shell`(코어 연결), `tray`, `secrets`(keyring), `settings`, `view`(UI용 요약)로 나뉜다.
 
