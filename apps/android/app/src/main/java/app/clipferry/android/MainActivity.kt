@@ -138,6 +138,8 @@ private fun ReadyScreen(state: UiState, batteryExempt: Boolean) {
 
     ReceiveCard(state)
 
+    SendCard(state)
+
     DevicesCard(
         devices = state.devices,
         canInvite = !state.removed,
@@ -183,6 +185,79 @@ private fun ReadyScreen(state: UiState, batteryExempt: Boolean) {
     BatteryCard(batteryExempt) {
         context.startActivity(
             Intent(android.provider.Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)
+        )
+    }
+}
+
+/** 보내기: 타일·알림 버튼 안내, 타일 추가, 지금 보내기, 민감한 내용 설정. */
+@Composable
+private fun SendCard(state: UiState) {
+    val context = LocalContext.current
+    var tileMessage by remember { mutableStateOf<String?>(null) }
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("보내기", style = MaterialTheme.typography.titleMedium)
+            Text(
+                "다른 앱에서 복사한 뒤 빠른 설정의 '클립보드 보내기' 타일이나 " +
+                    "상시 알림의 '클립보드 보내기'를 누르면 다른 기기로 갑니다. 텍스트·이미지 모두 됩니다.",
+                style = MaterialTheme.typography.bodySmall,
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                if (Build.VERSION.SDK_INT >= 33) {
+                    OutlinedButton(onClick = { requestAddTile(context) { tileMessage = it } }) {
+                        Text("타일 추가")
+                    }
+                }
+                OutlinedButton(onClick = {
+                    // 앱 화면에 초점이 있으니 바로 읽을 수 있다.
+                    val content = SendClipboard.read(context, state.syncSensitive)
+                    SendClipboard.send(context, content)
+                }) { Text("지금 클립보드 보내기") }
+            }
+            if (Build.VERSION.SDK_INT < 33) {
+                Text(
+                    "타일은 빠른 설정 패널의 편집(연필)에서 'clip-ferry 클립보드 보내기'를 끌어다 놓아 추가합니다.",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+            tileMessage?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("민감한 내용도 보내기")
+                    Text(
+                        "비밀번호 관리자 등이 민감하다고 표시한 복사. 끄면 보내지 않습니다",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+                Switch(
+                    checked = state.syncSensitive,
+                    onCheckedChange = { CoreController.setSyncSensitive(it) },
+                )
+            }
+        }
+    }
+}
+
+/** 빠른 설정 패널에 타일을 넣어 달라고 시스템에 요청한다 (안드로이드 13+). */
+private fun requestAddTile(context: android.content.Context, onResult: (String) -> Unit) {
+    if (Build.VERSION.SDK_INT < 33) return
+    val sbm = context.getSystemService(android.app.StatusBarManager::class.java)
+    sbm.requestAddTileService(
+        android.content.ComponentName(context, SendTileService::class.java),
+        context.getString(R.string.tile_label),
+        android.graphics.drawable.Icon.createWithResource(context, R.drawable.ic_stat_ferry),
+        ContextCompat.getMainExecutor(context),
+    ) { result ->
+        onResult(
+            when (result) {
+                android.app.StatusBarManager.TILE_ADD_REQUEST_RESULT_TILE_ADDED -> "타일을 추가했습니다"
+                android.app.StatusBarManager.TILE_ADD_REQUEST_RESULT_TILE_ALREADY_ADDED -> "이미 추가되어 있습니다"
+                android.app.StatusBarManager.TILE_ADD_REQUEST_RESULT_TILE_NOT_ADDED -> "추가하지 않았습니다"
+                else -> "추가하지 못했습니다. 빠른 설정 편집에서 직접 추가하세요"
+            },
         )
     }
 }

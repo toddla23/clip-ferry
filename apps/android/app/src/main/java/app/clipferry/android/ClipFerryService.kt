@@ -178,6 +178,7 @@ class ClipFerryService : Service() {
             .setContentTitle(getString(R.string.notif_title))
             .setContentText(notificationText(state))
             .setContentIntent(open)
+            .addAction(0, getString(R.string.notif_action_send), SendTileService.sendPendingIntent(this))
             .addAction(0, getString(R.string.notif_action_stop), stop)
             .setOngoing(true)
             .setOnlyAlertOnce(true)
