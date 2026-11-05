@@ -45,6 +45,7 @@
         <activity
             android:name=".ShareActivity"
             android:exported="true"
+            android:label="@string/share_label"
             android:excludeFromRecents="true"
             android:noHistory="true"
             android:taskAffinity=""
@@ -61,12 +62,21 @@
                 <category android:name="android.intent.category.DEFAULT" />
                 <data android:mimeType="image/*" />
             </intent-filter>
-            <intent-filter android:label="@string/process_text_label">
+        </activity>
+
+        <!-- 텍스트 선택 메뉴 "PC로 보내기" (F19). 메뉴는 intent-filter가 아닌 액티비티 이름을 쓰므로
+             이름이 다른 별칭으로 둔다. 실제 처리는 ShareActivity가 한다. -->
+        <activity-alias
+            android:name=".ProcessTextAlias"
+            android:exported="true"
+            android:label="@string/process_text_label"
+            android:targetActivity=".ShareActivity">
+            <intent-filter>
                 <action android:name="android.intent.action.PROCESS_TEXT" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <data android:mimeType="text/plain" />
             </intent-filter>
-        </activity>
+        </activity-alias>
 
         <!-- 빠른 설정 타일 "클립보드 보내기" (F18). -->
         <service
