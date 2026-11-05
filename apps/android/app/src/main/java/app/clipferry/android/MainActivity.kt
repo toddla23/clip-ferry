@@ -199,7 +199,9 @@ private fun SendCard(state: UiState) {
             Text("보내기", style = MaterialTheme.typography.titleMedium)
             Text(
                 "다른 앱에서 복사한 뒤 빠른 설정의 '클립보드 보내기' 타일이나 " +
-                    "상시 알림의 '클립보드 보내기'를 누르면 다른 기기로 갑니다. 텍스트·이미지 모두 됩니다.",
+                    "상시 알림의 '클립보드 보내기'를 누르면 다른 기기로 갑니다. 텍스트·이미지 모두 됩니다. " +
+                    "공유 메뉴의 '다른 기기로 보내기'(이미지 여러 장 가능)나 " +
+                    "텍스트를 길게 눌러 나오는 'PC로 보내기'로도 보낼 수 있습니다.",
                 style = MaterialTheme.typography.bodySmall,
             )
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
