@@ -174,6 +174,24 @@ async fn all_ready(all: &[&Online]) {
     }
 }
 
+/// 키 회전 직후에는 온라인 수가 이전 채널 값으로 남아 있을 수 있다.
+/// 받는 쪽이 새 채널에 붙을 때까지(전달 수가 `want`가 될 때까지) 다시 보낸다.
+async fn send_until_delivered(session: &Session, text: &str, want: u32) {
+    let end = tokio::time::Instant::now() + WAIT;
+    loop {
+        let delivered = session.send_text(text).await.unwrap();
+        if delivered == want {
+            return;
+        }
+        assert!(delivered < want, "너무 많이 전달됨: {delivered}");
+        assert!(
+            tokio::time::Instant::now() < end,
+            "전달 수가 {want}이 되지 않음"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
 #[tokio::test]
 async fn removed_device_stops_receiving_and_online_members_follow() {
     let relay = relay().await;
@@ -192,7 +210,7 @@ async fn removed_device_stops_receiving_and_online_members_follow() {
 
     // 새 채널에서는 A와 C만 오간다.
     assert!(oa.session.wait_online(2, WAIT).await);
-    assert_eq!(oa.session.send_text("after remove").await.unwrap(), 1);
+    send_until_delivered(&oa.session, "after remove", 1).await;
     assert_eq!(oc.clip().await.text, "after remove");
     ob.no_clip().await;
 
@@ -227,7 +245,7 @@ async fn offline_member_catches_up_when_it_reconnects() {
     assert!(oc.session.wait_online(2, WAIT).await);
     assert!(oa.session.wait_online(2, WAIT).await);
 
-    assert_eq!(oa.session.send_text("welcome back").await.unwrap(), 1);
+    send_until_delivered(&oa.session, "welcome back", 1).await;
     assert_eq!(oc.clip().await.text, "welcome back");
 
     // B도 돌아오면 자기가 제거된 것을 안다.
@@ -263,7 +281,7 @@ async fn devices_already_waiting_are_caught_up_when_the_remover_returns() {
 
     assert!(oc.session.wait_online(2, WAIT).await);
     assert!(oa.session.wait_online(2, WAIT).await);
-    assert_eq!(oa.session.send_text("pushed").await.unwrap(), 1);
+    send_until_delivered(&oa.session, "pushed", 1).await;
     assert_eq!(oc.clip().await.text, "pushed");
     ob.no_clip().await;
     oa.no_clip().await;
