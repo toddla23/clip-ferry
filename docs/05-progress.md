@@ -46,10 +46,26 @@
 | F30 | 받을 기기 지정 전송 | - | 대기 | 착수 전 재합의 |
 | F31 | 데스크톱 배포 패키지 | - | 진행중 | 1단계(사용자 요청 2026-11-05): GitHub Releases 배포 워크플로(데스크톱 3 OS + Android 서명 APK), 다운로드·설치 문서 `docs/07-release.md`. 코드 서명·공증·자동 업데이트는 후속 |
 
+## 다음에 할 일 (2026-11-05 세션 끝)
+
+브랜치가 이어져 있다: `main` ← `release-packaging`(F31 1단계) ← `ios-m4`(F21~F25). 둘 다 푸시됨, PR은 아직 없음.
+
+1. **F31 배포 (`release-packaging`)** — `todo/F31-확인.md` 순서대로
+   - 사용자: GitHub Secrets `ANDROID_KEYSTORE_BASE64`·`ANDROID_KEYSTORE_PASSWORD` 등록(키는 `%USERPROFILE%\.clip-ferry-release\`, 백업 필요)
+   - PR 생성(compare 링크) → 세 OS CI → 머지 → Actions `Release` 수동 실행(4개 작업 확인) → `v0.1.0` 태그
+   - macOS dmg·Linux 묶기·CI의 Android 빌드는 첫 Release 실행에서 처음 확인된다. 실패하면 API로 단계 확인
+2. **iOS (`ios-m4`)** — CI 시뮬레이터 빌드 통과(`3b430e1`), 실제 동작은 미확인
+   - 사용자가 Mac을 빌려 `todo/F21-F25-확인.md`로 한 번에 확인. 사전 준비: Apple 개발자 계정, APNs 키(.p8), Pi 릴레이를 이 브랜치로 올리고 APNs 켜기(`deploy/README.md`)
+   - PC 데스크톱 앱도 이 브랜치로 다시 빌드해야 푸시·재전송이 된다
+   - 확인 전 머지할지는 사용자에게 묻는다(지금은 확인 후 PR 예정)
+   - 지켜볼 것: 빌드 로그의 `appintentsnltrainingprocessor: Unable to parse extract.actionsdata`(단축어 동작이 안 보이면 관련 가능)
+3. 그 뒤 후보: M5(F26 다중 릴레이, F27 관측), F31 2단계(코드 서명·공증·자동 업데이트), M6(F28~F30, 착수 전 재합의), O-03 도메인·기본 릴레이 주소
+
 ## 작업 로그
 
 새 항목을 위에 추가한다. 형식: `YYYY-MM-DD F00 — 한 줄`
 
+- 2026-11-05 F21~F25 — iOS CI(`ios.yml`) 시뮬레이터 빌드 통과(앱·알림·공유·위젯 4개 타깃). Android 새 바인딩으로 `assembleDebug` 성공. 실기기·Mac 확인 대기
 - 2026-11-05 F21~F25 — 코어: 푸시 토큰(`set_push_token`, 로스터 `Member.push`), 푸시 대상(`push_targets`, 텍스트·`ImageStart`에만), 재전송(`seal_resend_request`, `Incoming::ResendRequested`, `Session`이 마지막 클립 10분 보관 → 요청한 기기에게만), 푸시 `ImageStart`는 `ImageAnnounced`. 릴레이: APNs 게이트웨이(`push.rs`, 오프라인 대상만, ES256 JWT, `deploy/compose.apns.yml`). FFI: `set_push_token`·`open_push`·`device_for_tag`·`request_resend`·`wait_connected`, 정적 라이브러리. iOS 앱(`apps/ios`, XcodeGen): 앱·알림 확장·공유 확장·위젯(제어 센터), 키체인 그룹·App Group, `scripts/build-ios-core.sh`, CI `ios.yml`. 진행중
 - 2026-11-05 F31 — 배포 워크플로 `release.yml`(v* 태그 → Releases: Windows NSIS, macOS 유니버설 dmg, Linux deb·AppImage, Android 서명 APK), Android 배포 서명 설정(환경 변수, 없으면 디버그 키), 배포 키 생성(저장소 밖), 문서 `docs/07-release.md`. Windows에서 `tauri build`(NSIS)·`assembleRelease`(배포 키 서명 확인) 성공. 진행중
 - 2026-11-05 F20 — 보류(사용자 결정, D-017). O-01은 기본안 A(D-016), iOS 번들 ID `app.clipferry.ios`(O-03)
