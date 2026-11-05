@@ -34,7 +34,8 @@ object ReceivedClips {
     private const val TAG = "clipferry"
     private const val CHANNEL_ID = "received"
     private const val NOTIFICATION_ID = 2
-    private const val LABEL = "clip-ferry"
+    /** 받아서 넣은 클립의 이름표. 보내기([SendClipboard])가 이것을 보고 되돌려 보내지 않는다. */
+    const val LABEL = "clip-ferry"
     private const val NOTIFICATION_TIMEOUT_MS = 15_000L
 
     private lateinit var appContext: Context

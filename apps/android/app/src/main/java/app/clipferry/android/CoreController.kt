@@ -64,6 +64,8 @@ data class UiState(
     val serviceEnabled: Boolean = true,
     /** 받은 내용을 클립보드에 넣을 때 알림을 띄우는가. */
     val notifyOnReceive: Boolean = true,
+    /** 민감한 내용으로 표시된 복사도 보내는가. */
+    val syncSensitive: Boolean = true,
     /** 마지막으로 받은 것 (이 앱이 켜진 뒤). 내용은 담지 않는다. */
     val lastReceived: Received? = null,
 ) {
@@ -101,6 +103,7 @@ object CoreController : CoreEvents {
             relayUrl = settings.relayUrl,
             serviceEnabled = settings.serviceEnabled,
             notifyOnReceive = settings.notifyOnReceive,
+            syncSensitive = settings.syncSensitive,
         )
         try {
             ensureOpen()
@@ -198,6 +201,52 @@ object CoreController : CoreEvents {
         settings.notifyOnReceive = enabled
         mutableState.update { it.copy(notifyOnReceive = enabled) }
     }
+
+    val syncSensitive: Boolean get() = settings.syncSensitive
+
+    fun setSyncSensitive(enabled: Boolean) {
+        settings.syncSensitive = enabled
+        mutableState.update { it.copy(syncSensitive = enabled) }
+    }
+
+    // ------------------------------------------------------- 보내기 (F18)
+
+    /**
+     * 그룹이 있는데 연결이 꺼져 있으면 서비스를 켠다. 앱 화면(보내기 액티비티 포함)이
+     * 떠 있을 때 불러야 한다(백그라운드에서는 포그라운드 서비스를 시작할 수 없다).
+     */
+    fun ensureRunning() {
+        val s = mutableState.value
+        if (!s.hasGroup || s.removed) return
+        if (client?.isRunning() == true) return
+        startService()
+    }
+
+    /**
+     * 연결될 때까지 최대 [timeoutMs] 기다린다. 연결되면 `null`, 아니면 사용자에게 보여 줄 이유.
+     * 작업 스레드에서 부른다.
+     */
+    fun awaitConnected(timeoutMs: Long): String? {
+        val end = System.currentTimeMillis() + timeoutMs
+        while (true) {
+            val s = mutableState.value
+            when {
+                !s.hasGroup -> return "먼저 그룹을 만들거나 참여하세요"
+                s.removed -> return "이 기기는 그룹에서 제거되었습니다. 다시 페어링하세요"
+                s.link == Link.CONNECTED -> return null
+            }
+            if (System.currentTimeMillis() >= end) {
+                return "릴레이에 연결되지 않아 보내지 못했습니다"
+            }
+            Thread.sleep(100)
+        }
+    }
+
+    /** 작업 스레드에서 부른다. 릴레이가 전달한 기기 수. */
+    fun sendText(text: String): Int = ensureOpen().sendText(text).toInt()
+
+    /** 작업 스레드에서 부른다. 릴레이가 전달한 기기 수. */
+    fun sendImage(bytes: ByteArray): Int = ensureOpen().sendImage(bytes).toInt()
 
     /** [ReceivedClips]가 클립보드에 쓴 뒤 부른다. 화면의 "마지막으로 받은 것"을 고친다. */
     fun noteReceived(fromName: String, isImage: Boolean, ok: Boolean) {

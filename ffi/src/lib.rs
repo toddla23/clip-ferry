@@ -5,7 +5,7 @@
 //! F15: 기기·그룹 만들기, 상태 조회, 릴레이 세션 시작·중지, 연결 상태 알림.
 //! F16: 페어링(초대·참여·승인), 기기 목록(온라인 표시), 그룹 나가기, QR 칸 만들기.
 //! F17: 받은 텍스트·이미지를 셸에 넘긴다(셸이 클립보드에 쓴다).
-//! 보내기(F18~)는 이후 기능에서 같은 방식으로 추가한다.
+//! F18: 텍스트·이미지 보내기(셸이 클립보드에서 읽어 넘긴다).
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -15,7 +15,7 @@ use clip_ferry_core::api::{Clip, ClipFerry, Config, Error, GroupHealth, ImageCli
 use clip_ferry_core::crypto::DeviceId;
 use clip_ferry_core::pair_flow::{self, InviteFlow, InviteUpdate, JoinFlow, JoinUpdate};
 use clip_ferry_core::pairing::Invite;
-use clip_ferry_core::session::{ConnectionStatus, EventSink, Session};
+use clip_ferry_core::session::{ConnectionStatus, EventSink, SendError, Session};
 use clip_ferry_core::store::{SecretStore, StoreError};
 use clip_ferry_core::transfer;
 use clip_ferry_core::transport::TransportConfig;
@@ -36,6 +36,17 @@ impl From<Error> for FfiError {
     fn from(e: Error) -> Self {
         match e {
             Error::Removed => FfiError::Removed,
+            other => FfiError::Failed {
+                reason: other.to_string(),
+            },
+        }
+    }
+}
+
+impl From<SendError> for FfiError {
+    fn from(e: SendError) -> Self {
+        match e {
+            SendError::App(e) => e.into(),
             other => FfiError::Failed {
                 reason: other.to_string(),
             },
@@ -282,7 +293,8 @@ fn check_relay(url: &str) -> Result<&str, FfiError> {
 pub struct ClipFerryClient {
     app: Arc<ClipFerry>,
     runtime: tokio::runtime::Runtime,
-    session: Mutex<Option<Session>>,
+    /// 보내는 쪽이 잠금을 오래 쥐지 않도록 `Arc`로 꺼내 쓴다.
+    session: Mutex<Option<Arc<Session>>>,
     online: Arc<Mutex<Vec<DeviceId>>>,
     pairing: Mutex<Option<Pairing>>,
     /// 페어링을 새로 시작하거나 닫을 때마다 늘린다. 이전 진행의 늦은 알림을 버리는 데 쓴다.
@@ -386,7 +398,7 @@ impl ClipFerryClient {
                 online: self.online.clone(),
             }),
         )?;
-        *slot = Some(session);
+        *slot = Some(Arc::new(session));
         Ok(())
     }
 
@@ -399,6 +411,28 @@ impl ClipFerryClient {
 
     pub fn is_running(&self) -> bool {
         self.session.lock().unwrap().is_some()
+    }
+
+    /// 텍스트를 그룹의 다른 기기들에게 보낸다. 릴레이가 전달한 기기 수를 돌려준다(0이면 받을 기기가 없었다).
+    /// 릴레이 응답을 기다리므로 셸은 메인 스레드가 아닌 곳에서 부른다.
+    pub fn send_text(&self, text: String) -> Result<u32, FfiError> {
+        let session = self.current_session()?;
+        Ok(self.runtime.block_on(session.send_text(&text))?)
+    }
+
+    /// 이미지(PNG·JPEG·GIF·WebP 원본 바이트, 최대 20 MiB)를 보낸다. 형식과 크기는 머리말로 알아낸다.
+    /// 마지막 조각을 릴레이가 전달한 기기 수를 돌려준다. 셸은 메인 스레드가 아닌 곳에서 부른다.
+    pub fn send_image(&self, bytes: Vec<u8>) -> Result<u32, FfiError> {
+        let sniffed = transfer::sniff(&bytes).ok_or_else(|| FfiError::Failed {
+            reason: "보낼 수 없는 이미지 형식입니다 (PNG·JPEG·GIF·WebP만)".into(),
+        })?;
+        let session = self.current_session()?;
+        Ok(self.runtime.block_on(session.send_image(
+            &bytes,
+            sniffed.mime,
+            sniffed.width,
+            sniffed.height,
+        ))?)
     }
 
     /// 이 그룹에 다른 기기를 초대한다. QR에는 `relay_url`이 들어가 참여하는 쪽이 같은 릴레이를 쓴다.
@@ -497,6 +531,16 @@ impl ClipFerryClient {
 }
 
 impl ClipFerryClient {
+    fn current_session(&self) -> Result<Arc<Session>, FfiError> {
+        self.session
+            .lock()
+            .unwrap()
+            .clone()
+            .ok_or_else(|| FfiError::Failed {
+                reason: "릴레이에 연결되어 있지 않습니다".into(),
+            })
+    }
+
     /// 새 페어링 번호를 받고, 그 번호가 아직 현재일 때만 알림을 넘기는 함수를 만든다.
     fn forwarder(&self, listener: Arc<dyn PairListener>) -> impl Fn(PairEvent) + Send + Sync {
         let gen = self.pair_gen.clone();
@@ -1014,6 +1058,63 @@ mod tests {
             .unwrap()
             .iter()
             .all(|(n, _)| n == "PC"));
+    }
+
+    /// 폰이 보낸 텍스트·이미지가 PC에 온다. 연결 전·빈 텍스트·모르는 형식은 오류로 끝난다.
+    #[test]
+    fn phone_sends_text_and_image() {
+        let (_rt, _relay, url) = relay();
+        let pc = phone("PC", true);
+        let mobile = phone("폰", false);
+        pair(&pc, &mobile, &url);
+
+        // 연결 전에는 보낼 수 없다.
+        assert!(matches!(
+            mobile.client.send_text("먼저".into()),
+            Err(FfiError::Failed { .. })
+        ));
+
+        let pc_events = Arc::new(Recorder::default());
+        pc.client.start(url.clone(), pc_events.clone()).unwrap();
+        mobile
+            .client
+            .start(url, Arc::new(Recorder::default()))
+            .unwrap();
+        for c in [&pc.client, &mobile.client] {
+            wait_until(
+                || c.devices().iter().filter(|d| d.online).count() == 2,
+                "두 기기가 서로 온라인으로 보이지 않았다",
+            );
+        }
+
+        assert_eq!(mobile.client.send_text("폰에서 보냄 ✅".into()).unwrap(), 1);
+        wait_until(
+            || !pc_events.texts.lock().unwrap().is_empty(),
+            "텍스트가 오지 않았다",
+        );
+        assert_eq!(
+            pc_events.texts.lock().unwrap()[0],
+            ("폰".to_string(), "폰에서 보냄 ✅".to_string())
+        );
+
+        let png = tiny_png(4, 4);
+        assert_eq!(mobile.client.send_image(png.clone()).unwrap(), 1);
+        wait_until(
+            || !pc_events.images.lock().unwrap().is_empty(),
+            "이미지가 오지 않았다",
+        );
+        assert_eq!(pc_events.images.lock().unwrap()[0].2, png);
+
+        assert!(mobile.client.send_text(String::new()).is_err());
+        assert!(mobile.client.send_image(vec![1u8; 100]).is_err());
+        assert!(mobile
+            .client
+            .send_text("x".repeat(1024 * 1024 + 1))
+            .is_err());
+
+        // 연결을 끊으면 다시 오류.
+        mobile.client.stop();
+        assert!(mobile.client.send_text("끊김".into()).is_err());
     }
 
     #[test]

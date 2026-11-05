@@ -9,6 +9,8 @@
     <string name="notif_reconnecting">재연결 중…</string>
     <string name="notif_stopped">연결 안 됨</string>
     <string name="notif_action_stop">중지</string>
+    <string name="notif_action_send">클립보드 보내기</string>
+    <string name="tile_label">클립보드 보내기</string>
     <string name="received_channel_name">받은 클립보드</string>
     <string name="received_channel_description">다른 기기에서 받은 내용을 클립보드에 넣었을 때 보이는 알림입니다</string>
     <string name="notif_removed">그룹에서 제거됨 — 다시 페어링하세요</string>

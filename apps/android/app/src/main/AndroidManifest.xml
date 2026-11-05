@@ -31,6 +31,27 @@
             </intent-filter>
         </activity>
 
+        <!-- 타일·알림 버튼이 여는 보이지 않는 액티비티(F18). 초점을 받아 클립보드를 읽고 바로 닫힌다. -->
+        <activity
+            android:name=".SendActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:taskAffinity=""
+            android:theme="@style/Theme.ClipFerry.Send" />
+
+        <!-- 빠른 설정 타일 "클립보드 보내기" (F18). -->
+        <service
+            android:name=".SendTileService"
+            android:exported="true"
+            android:icon="@drawable/ic_stat_ferry"
+            android:label="@string/tile_label"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE" />
+            </intent-filter>
+        </service>
+
         <!-- 받은 이미지(F17)를 클립보드 URI로 넘긴다. 붙여넣는 앱은 클립보드가 주는 임시 권한으로만 읽는다. -->
         <provider
             android:name="androidx.core.content.FileProvider"
