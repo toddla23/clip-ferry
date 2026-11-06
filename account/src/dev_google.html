@@ -1,0 +1,95 @@
+<!doctype html>
+<!-- 개발 전용 시험 페이지 (--dev-pages). 구글 로그인 → 계정 서버 → /v1/me 까지 한 번에 확인한다. -->
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>clip-ferry 계정 시험</title>
+  <script src="https://accounts.google.com/gsi/client" async></script>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 720px; margin: 2rem auto; padding: 0 1rem; }
+    pre { background: #f4f4f4; padding: 1rem; overflow-x: auto; white-space: pre-wrap; word-break: break-all; }
+    button { margin: .25rem .5rem .25rem 0; }
+    .ok { color: #137333; } .err { color: #b3261e; }
+  </style>
+</head>
+<body>
+  <h1>clip-ferry 계정 시험 (개발용)</h1>
+  <p>구글로 로그인하면 계정 서버가 ID 토큰을 검증하고 접속 토큰을 준다. 토큰 원문은 화면에 보이지 않는다.</p>
+
+  <div id="g_id_onload" data-client_id="{{CLIENT_ID}}" data-callback="onGoogle" data-auto_prompt="false"></div>
+  <div class="g_id_signin" data-type="standard" data-locale="ko"></div>
+
+  <p>
+    <button id="me" disabled>내 계정 보기 (/v1/me)</button>
+    <button id="device" disabled>시험 기기 등록</button>
+    <button id="refresh" disabled>토큰 갱신</button>
+    <button id="logout" disabled>로그아웃</button>
+  </p>
+  <p id="status"></p>
+  <pre id="out">(아직 없음)</pre>
+
+<script>
+let access = null, refresh = null;
+const out = document.getElementById('out');
+const status = document.getElementById('status');
+
+function show(ok, title, body) {
+  status.className = ok ? 'ok' : 'err';
+  status.textContent = title;
+  out.textContent = typeof body === 'string' ? body : JSON.stringify(body, null, 2);
+}
+
+function setButtons() {
+  for (const id of ['me', 'device', 'refresh', 'logout']) {
+    document.getElementById(id).disabled = !access;
+  }
+}
+
+async function call(method, path, body, auth) {
+  const headers = { 'content-type': 'application/json' };
+  if (auth && access) headers['authorization'] = 'Bearer ' + access;
+  const r = await fetch(path, { method, headers, body: body ? JSON.stringify(body) : undefined });
+  const text = await r.text();
+  let json = null;
+  try { json = text ? JSON.parse(text) : null; } catch (_) {}
+  return { status: r.status, json, text };
+}
+
+function takeTokens(r) {
+  access = r.json.access_token;
+  refresh = r.json.refresh_token;
+  setButtons();
+  const shown = { ...r.json, access_token: '(받음)', refresh_token: '(받음)' };
+  return shown;
+}
+
+async function onGoogle(resp) {
+  const r = await call('POST', '/v1/auth/google', { id_token: resp.credential });
+  if (r.status === 200) show(true, '로그인 성공', takeTokens(r));
+  else show(false, '로그인 실패 (' + r.status + ')', r.json || r.text);
+}
+window.onGoogle = onGoogle;
+
+document.getElementById('me').onclick = async () => {
+  const r = await call('GET', '/v1/me', null, true);
+  show(r.status === 200, '/v1/me (' + r.status + ')', r.json || r.text);
+};
+document.getElementById('device').onclick = async () => {
+  const id = Array.from(crypto.getRandomValues(new Uint8Array(16)), b => b.toString(16).padStart(2, '0')).join('');
+  const r = await call('PUT', '/v1/devices/' + id, { name: '시험 페이지', platform: 'cli' }, true);
+  show(r.status === 200, '기기 등록 (' + r.status + ')', r.json || r.text);
+};
+document.getElementById('refresh').onclick = async () => {
+  const r = await call('POST', '/v1/auth/refresh', { refresh_token: refresh });
+  if (r.status === 200) show(true, '갱신 성공 (옛 갱신 토큰은 이제 못 쓴다)', takeTokens(r));
+  else { access = null; setButtons(); show(false, '갱신 실패 (' + r.status + ')', r.json || r.text); }
+};
+document.getElementById('logout').onclick = async () => {
+  const r = await call('POST', '/v1/auth/logout', { refresh_token: refresh });
+  access = null; refresh = null; setButtons();
+  show(r.status === 204, '로그아웃 (' + r.status + ')', '갱신 토큰을 무효화했다');
+};
+</script>
+</body>
+</html>

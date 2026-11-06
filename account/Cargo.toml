@@ -1,0 +1,30 @@
+[package]
+name = "clip-ferry-account"
+description = "clip-ferry 계정 서버 (구글 로그인 검증, 접속 토큰 발급, D-019)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+axum = "0.7"
+base64 = "0.22"
+clap.workspace = true
+ed25519-dalek = { version = "2", features = ["zeroize"] }
+getrandom = "0.2"
+hex = "0.4"
+jsonwebtoken = "9"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "tls-rustls", "mysql", "migrate", "macros"] }
+thiserror = "1"
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "sync", "time", "signal"] }
+tracing.workspace = true
+tracing-subscriber.workspace = true
+zeroize = "1"
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }

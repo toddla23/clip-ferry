@@ -40,3 +40,28 @@ jobs:
       - run: cargo fmt --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
+
+  # 계정 서버를 실제 MariaDB로 시험한다 (F32). 다른 OS에서는 메모리 저장소로만 돈다.
+  account-mariadb:
+    name: account (MariaDB)
+    runs-on: ubuntu-latest
+    services:
+      mariadb:
+        image: mariadb:11.4
+        env:
+          MARIADB_DATABASE: clipferry_test
+          MARIADB_USER: clipferry
+          MARIADB_PASSWORD: test-only
+          MARIADB_RANDOM_ROOT_PASSWORD: "1"
+        ports: ["3306:3306"]
+        options: >-
+          --health-cmd "healthcheck.sh --connect --innodb_initialized"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+    env:
+      CF_TEST_MARIADB_URL: mysql://clipferry:test-only@127.0.0.1:3306/clipferry_test
+    steps:
+      - uses: actions/checkout@v4
+      - name: Rust toolchain (rust-toolchain.toml)
+        run: rustup show
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test -p clip-ferry-account

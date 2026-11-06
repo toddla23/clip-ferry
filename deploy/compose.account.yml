@@ -1,0 +1,46 @@
+# 계정 서버 + MariaDB (F32, D-019). 릴레이(compose.yml)와 따로 올린다.
+#   실행: docker compose --env-file deploy/.env.account -f deploy/compose.account.yml up -d --build
+# 값은 deploy/.env.account 에 둔다 (git에 넣지 않는다, deploy/README.md "계정 서버" 절).
+services:
+  mariadb:
+    image: mariadb:11.4
+    restart: unless-stopped
+    environment:
+      MARIADB_DATABASE: clipferry
+      MARIADB_USER: clipferry
+      MARIADB_PASSWORD: "${CF_DB_PASSWORD:?deploy/.env.account에 CF_DB_PASSWORD가 필요합니다}"
+      MARIADB_RANDOM_ROOT_PASSWORD: "1"
+    # 외부 DB 클라이언트용: 이 기기의 127.0.0.1:3307에만 연다(LAN·인터넷에는 안 열림).
+    # 다른 PC에서는 tailscale serve의 TCP 전달로 tailnet 안에서만 붙는다(deploy/README.md "DB 클라이언트로 접속").
+    ports:
+      - "127.0.0.1:${CF_DB_PORT:-3307}:3306"
+    # 데이터는 Pi의 폴더에 둔다(Docker 볼륨이 아니라). 컨테이너를 지우거나 `down -v`·`prune`을 해도 남는다.
+    volumes:
+      - "${CF_DB_DIR:-/var/lib/clip-ferry/mariadb}:/var/lib/mysql"
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+
+  account:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.account
+    image: clip-ferry-account:local
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    depends_on:
+      mariadb:
+        condition: service_healthy
+    # 이 기기에서만 연다. 밖에서는 tailscale serve(https 8443)로 들어온다.
+    ports:
+      - "127.0.0.1:8788:8788"
+    environment:
+      CF_ACCOUNT_DATABASE_URL: "mysql://clipferry:${CF_DB_PASSWORD}@mariadb:3306/clipferry"
+      CF_ACCOUNT_SIGNING_KEY: "${CF_ACCOUNT_SIGNING_KEY:?deploy/.env.account에 CF_ACCOUNT_SIGNING_KEY가 필요합니다}"
+      CF_ACCOUNT_GOOGLE_CLIENT_IDS: "${CF_GOOGLE_CLIENT_IDS:-}"
+      CF_ACCOUNT_DEV_PAGES: "${CF_DEV_PAGES:-false}"
+      CF_ACCOUNT_DEV_LOGIN: "${CF_DEV_LOGIN:-false}"
