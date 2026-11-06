@@ -10,6 +10,7 @@ const ERROR_SLOTS: usize = 8;
 pub struct Metrics {
     connections: AtomicU64,
     rejected: AtomicU64,
+    unauthorized: AtomicU64,
     open: AtomicU64,
     frames_in: AtomicU64,
     bytes_in: AtomicU64,
@@ -22,6 +23,8 @@ pub struct Metrics {
 pub struct Snapshot {
     pub connections: u64,
     pub rejected: u64,
+    /// 접속 토큰이 없거나 틀려 거부한 연결
+    pub unauthorized: u64,
     pub open: u64,
     pub frames_in: u64,
     pub bytes_in: u64,
@@ -44,6 +47,10 @@ impl Metrics {
         self.rejected.fetch_add(1, Relaxed);
     }
 
+    pub fn unauthorized(&self) {
+        self.unauthorized.fetch_add(1, Relaxed);
+    }
+
     pub fn frame_in(&self, bytes: usize) {
         self.frames_in.fetch_add(1, Relaxed);
         self.bytes_in.fetch_add(bytes as u64, Relaxed);
@@ -63,6 +70,7 @@ impl Metrics {
         Snapshot {
             connections: self.connections.load(Relaxed),
             rejected: self.rejected.load(Relaxed),
+            unauthorized: self.unauthorized.load(Relaxed),
             open: self.open.load(Relaxed),
             frames_in: self.frames_in.load(Relaxed),
             bytes_in: self.bytes_in.load(Relaxed),
@@ -76,10 +84,11 @@ impl fmt::Display for Snapshot {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "connections={} open={} rejected={} frames_in={} bytes_in={} delivered={} errors={:?}",
+            "connections={} open={} rejected={} unauthorized={} frames_in={} bytes_in={} delivered={} errors={:?}",
             self.connections,
             self.open,
             self.rejected,
+            self.unauthorized,
             self.frames_in,
             self.bytes_in,
             self.delivered,

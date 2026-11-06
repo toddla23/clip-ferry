@@ -9,6 +9,7 @@
 //! | `POST /v1/auth/logout` `{refresh_token}` | 그 로그인의 갱신 토큰 무효화 |
 //! | `GET /v1/me` | 내 계정과 기기 (Bearer 접속 토큰) |
 //! | `PUT /v1/devices/{device_id}` `{name, platform}` | 기기 등록·갱신 (Bearer) |
+//! | `POST /internal/usage` `{entries: [{user_id, messages, bytes}]}` | 릴레이가 보내는 사용량 (Bearer 공유 비밀, F33) |
 //! | `POST /v1/auth/dev` `{email, name}` | 개발용 로그인 (`--dev-login`일 때만) |
 //! | `GET /dev/google` | 구글 로그인 시험 페이지 (`--dev-pages`일 때만) |
 //!
@@ -24,7 +25,7 @@ use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 
 use crate::google::{GoogleError, GoogleVerifier};
-use crate::store::{Device, Identity, Rotate, Store, StoreError, User};
+use crate::store::{Device, Identity, Rotate, Store, StoreError, UsageDay, User};
 use crate::tokens::{self, Signer};
 
 /// 받을 수 있는 기기 플랫폼 이름
@@ -38,6 +39,8 @@ pub struct AppState {
     pub dev_login: bool,
     /// `GET /dev/google` 시험 페이지 (개발 전용)
     pub dev_pages: bool,
+    /// 릴레이 사용량 보고(`POST /internal/usage`)의 공유 비밀. 없으면 그 경로를 열지 않는다.
+    pub usage_secret: Option<String>,
 }
 
 pub fn router(state: Arc<AppState>) -> Router {
@@ -51,6 +54,13 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/v1/devices/:device_id", put(put_device));
     if state.dev_login {
         r = r.route("/v1/auth/dev", post(auth_dev));
+    }
+    if state.usage_secret.is_some() {
+        // 릴레이가 계정 여러 개를 한 번에 보내므로 본문 한도를 따로 둔다
+        r = r.route(
+            "/internal/usage",
+            post(internal_usage).layer(DefaultBodyLimit::max(4 * 1024 * 1024)),
+        );
     }
     if state.dev_pages {
         r = r.route("/dev/google", get(dev_google_page));
@@ -150,6 +160,8 @@ pub struct TokenResponse {
 pub struct MeResponse {
     pub user: UserView,
     pub devices: Vec<Device>,
+    /// 일별 사용량 (릴레이가 보낸 게시 수·바이트, 내용 없음). 최근 30일
+    pub usage: Vec<UsageDay>,
 }
 
 // ---------------------------------------------------------------- 처리기
@@ -301,9 +313,18 @@ async fn me(State(s): State<Arc<AppState>>, headers: HeaderMap) -> ApiResult<Jso
         .await?
         .ok_or_else(ApiError::unauthorized)?;
     let devices = s.store.devices(&user_id).await?;
+    let today = (crate::now_ms() / 86_400_000) as i32;
+    let usage = s
+        .store
+        .usage(&user_id)
+        .await?
+        .into_iter()
+        .filter(|d| d.day > today - 30)
+        .collect();
     Ok(Json(MeResponse {
         user: user.into(),
         devices,
+        usage,
     }))
 }
 
@@ -339,6 +360,60 @@ async fn put_device(
         .upsert_device(&user_id, &device_id, name, &body.platform, crate::now_ms())
         .await?;
     Ok(Json(d))
+}
+
+#[derive(Deserialize)]
+struct UsageBody {
+    entries: Vec<UsageItem>,
+}
+
+#[derive(Deserialize)]
+struct UsageItem {
+    user_id: String,
+    messages: u64,
+    bytes: u64,
+}
+
+/// 한 번에 받을 계정 수
+const MAX_USAGE_ENTRIES: usize = 20_000;
+
+async fn internal_usage(
+    State(s): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(body): Json<UsageBody>,
+) -> ApiResult<Json<serde_json::Value>> {
+    let expected = s
+        .usage_secret
+        .as_deref()
+        .ok_or_else(ApiError::unauthorized)?;
+    let given = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .ok_or_else(ApiError::unauthorized)?;
+    // 길이와 내용이 새지 않게 해시끼리 비교한다
+    use sha2::{Digest, Sha256};
+    if Sha256::digest(given.trim().as_bytes()) != Sha256::digest(expected.as_bytes()) {
+        return Err(ApiError::unauthorized());
+    }
+    if body.entries.len() > MAX_USAGE_ENTRIES {
+        return Err(ApiError::bad("too_many_entries"));
+    }
+    let entries: Vec<(String, i64, i64)> = body
+        .entries
+        .into_iter()
+        .filter(|e| e.user_id.len() == 32)
+        .map(|e| {
+            (
+                e.user_id,
+                e.messages.min(i64::MAX as u64) as i64,
+                e.bytes.min(i64::MAX as u64) as i64,
+            )
+        })
+        .collect();
+    let day = (crate::now_ms() / 86_400_000) as i32;
+    let accepted = s.store.add_usage(day, &entries).await?;
+    Ok(Json(serde_json::json!({ "accepted": accepted })))
 }
 
 async fn dev_google_page(State(s): State<Arc<AppState>>) -> Html<String> {

@@ -291,6 +291,10 @@ enum ErrorCode { ERROR_UNSPECIFIED = 0; BAD_FRAME = 1; TOO_LARGE = 2; RATE_LIMIT
 - IP당 동시 연결 한도를 넘으면 업그레이드 단계에서 HTTP 429. (리버스 프록시 뒤에서는 프록시 IP로 센다 — F14b에서 다룬다.)
 - `Presence`는 구독·구독 해지·연결 종료로 채널 구성이 바뀔 때마다 그 채널의 모든 구독자에게 간다.
 - `push`는 F20 전까지 무시되고 `Ack.pushed`는 항상 0.
+- **접속 토큰 (F33, D-019)**: 릴레이에 계정 서버 주소(`CF_RELAY_ACCOUNT_URL`)를 주면 WebSocket 업그레이드 요청의 `Authorization: Bearer <접속 토큰>`을 확인한다. 토큰은 계정 서버가 발급한 EdDSA(Ed25519) JWT로, `iss = "clip-ferry-account"`, `aud = "clip-ferry-relay"`, `sub` = 계정 ID, 1시간. 릴레이는 계정 서버의 `GET /v1/keys`(JWKS, `kty=OKP`)를 10분마다 받아 서명만 확인하고 DB는 보지 않는다. 확인은 연결할 때만 한다(연결 중 만료돼도 유지).
+  - 없음·위조·만료 → HTTP 401(코어는 `Event::Unauthorized`, 셸에는 `EventSink::on_auth_required`). 공개키를 아직 못 받음 → 503. 계정당 동시 연결 한도 초과 → 429. 계정당 분당 바이트 초과 → `RATE_LIMITED`(연결 유지). IP당 제한은 그대로 함께 건다.
+  - 사용량: 계정별 게시 수·페이로드 바이트를 메모리에 모아 1분마다 `POST /internal/usage {entries:[{user_id, messages, bytes}]}`(Bearer 공유 비밀)로 보낸다. 실패하면 되돌려 두었다가 다음에 같이 보낸다. 채널 ID·태그·페이로드는 보내지 않는다.
+  - 주소를 주지 않으면 지금처럼 토큰 없이 누구나 접속한다(앱 로그인 F34·F35 전까지의 기본).
 - 클라이언트 재연결 백오프는 1s에서 시작해 두 배씩 늘어 최대 60s. 끊긴 동안의 `Publish`는 쌓지 않고 `PublishFailed`로 알린다.
 - `wss://`(TLS) 클라이언트는 `rustls`(ring) + 번들 루트 인증서(webpki-roots)로 지원한다(F14). 서버는 TLS를 직접 하지 않고 앞단(프록시·호스팅)이 종단한다. 실제 TLS 서버와의 접속은 인증서를 받은 뒤 확인한다.
 

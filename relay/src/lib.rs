@@ -3,6 +3,7 @@
 //! 상태는 메모리의 `채널 ID → 연결 목록` 맵뿐이며 디스크에 아무것도 쓰지 않는다.
 //! 로그에는 집계 숫자만 남기고 채널 ID·태그·페이로드는 절대 남기지 않는다.
 
+pub mod auth;
 mod conn;
 mod hub;
 mod limits;
@@ -23,6 +24,7 @@ use tokio::net::TcpListener;
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
 
+use auth::{AuthConfig, Verdict};
 use conn::run_connection;
 use hub::{IpGuard, Shared};
 
@@ -43,6 +45,8 @@ pub struct Config {
     pub trust_proxy: bool,
     /// 이 시간 동안 클라이언트에서 아무것도 오지 않으면 연결을 닫는다.
     pub idle_timeout: Duration,
+    /// 접속 토큰 확인 (F33). `None`이면 토큰 없이 누구나 접속한다(계정 도입 전과 같음).
+    pub auth: Option<AuthConfig>,
 }
 
 impl Default for Config {
@@ -55,6 +59,7 @@ impl Default for Config {
             max_conns_per_ip: 32,
             trust_proxy: false,
             idle_timeout: Duration::from_secs(60),
+            auth: None,
         }
     }
 }
@@ -76,6 +81,19 @@ impl RelayHandle {
         self.shared.metrics.snapshot()
     }
 
+    /// 접속 토큰을 확인할 준비가 됐는지 (계정 서버 공개키를 받았는지). 확인을 끈 릴레이는 늘 `true`.
+    pub fn auth_ready(&self) -> bool {
+        self.shared.auth.as_ref().map_or(true, |a| a.ready())
+    }
+
+    /// 모인 사용량을 지금 계정 서버로 보낸다 (테스트용. 평소에는 주기적으로 보낸다).
+    pub async fn flush_usage(&self) -> anyhow::Result<usize> {
+        match &self.shared.auth {
+            Some(a) => a.report_usage().await,
+            None => Ok(0),
+        }
+    }
+
     /// 열린 연결을 모두 닫고 멈춘다.
     pub async fn shutdown(self) {
         let _ = self.shutdown_tx.send(true);
@@ -88,6 +106,9 @@ pub fn spawn(listener: TcpListener, config: Config) -> RelayHandle {
     let addr = listener.local_addr().expect("바인드된 리스너");
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
     let shared = Arc::new(Shared::new(config, shutdown_rx.clone()));
+    if let Some(auth) = &shared.auth {
+        auth::spawn_tasks(auth.clone(), shutdown_rx.clone());
+    }
 
     let app = Router::new()
         .route("/", get(ws_handler))
@@ -138,10 +159,33 @@ async fn ws_handler(
         shared.metrics.connections_rejected();
         return StatusCode::TOO_MANY_REQUESTS.into_response();
     };
+    // 접속 토큰 (계정 서버를 쓸 때만). 토큰·계정 ID는 로그에 남기지 않는다.
+    let account = match &shared.auth {
+        None => None,
+        Some(auth) => {
+            let header = headers
+                .get(axum::http::header::AUTHORIZATION)
+                .and_then(|v| v.to_str().ok());
+            match auth.verify_header(header) {
+                Verdict::Ok(user) => match auth.acquire(user) {
+                    Some(g) => Some(g),
+                    None => {
+                        shared.metrics.connections_rejected();
+                        return StatusCode::TOO_MANY_REQUESTS.into_response();
+                    }
+                },
+                Verdict::Invalid => {
+                    shared.metrics.unauthorized();
+                    return StatusCode::UNAUTHORIZED.into_response();
+                }
+                Verdict::NotReady => return StatusCode::SERVICE_UNAVAILABLE.into_response(),
+            }
+        }
+    };
     // 한도의 2배까지는 연결을 유지한 채 `TOO_LARGE`로 응답하고, 그보다 크면 연결을 끊는다.
     let limit = shared.config.max_frame_bytes.saturating_mul(2);
     ws.protocols([SUBPROTOCOL])
         .max_message_size(limit)
         .max_frame_size(limit)
-        .on_upgrade(move |socket| run_connection(socket, shared, guard))
+        .on_upgrade(move |socket| run_connection(socket, shared, guard, account))
 }

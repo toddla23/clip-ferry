@@ -20,6 +20,7 @@ const KEY_B: &str = include_str!("fixtures/test-google-b.pem");
 const JWKS_A: &str = include_str!("fixtures/test-google-a.jwks.json");
 const KID_A: &str = "test-kid-a";
 const CLIENT: &str = "test-client.apps.googleusercontent.com";
+const USAGE_SECRET: &str = "test-usage-secret";
 
 // ---------------------------------------------------------------- 도우미
 
@@ -58,6 +59,7 @@ async fn start(store: Store, dev_login: bool) -> Server {
         google: GoogleVerifier::new(vec![CLIENT.into()], static_google_keys()),
         dev_login,
         dev_pages: true,
+        usage_secret: Some(USAGE_SECRET.into()),
     });
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -566,4 +568,54 @@ async fn dev_page_has_client_id() {
     // 페이지가 /dev/ 아래에 있으므로 API는 절대 경로로 불러야 한다
     assert!(html.contains("'/v1/auth/google'"));
     assert!(!html.contains("'v1/"));
+}
+
+#[tokio::test]
+async fn internal_usage_from_relay() {
+    for (name, store) in stores().await {
+        let srv = start(store, false).await;
+        let (_, body) = srv.google_login(good_token(&new_sub())).await;
+        let user_id = s(&body["user"], "id");
+        let report = json!({ "entries": [
+            { "user_id": user_id, "messages": 3, "bytes": 120 },
+            { "user_id": "ffffffffffffffffffffffffffffffff", "messages": 1, "bytes": 1 },
+        ]});
+        let post = |secret: Option<&str>| {
+            let mut req = srv
+                .http
+                .post(format!("{}/internal/usage", srv.base))
+                .json(&report);
+            if let Some(t) = secret {
+                req = req.bearer_auth(t);
+            }
+            req.send()
+        };
+        assert_eq!(post(None).await.unwrap().status().as_u16(), 401, "{name}");
+        assert_eq!(
+            post(Some("wrong")).await.unwrap().status().as_u16(),
+            401,
+            "{name}"
+        );
+        let r = post(Some(USAGE_SECRET)).await.unwrap();
+        assert_eq!(r.status().as_u16(), 200, "{name}");
+        let v: Value = r.json().await.unwrap();
+        assert_eq!(v["accepted"], 1, "{name}: 없는 계정은 건너뛴다");
+        post(Some(USAGE_SECRET)).await.unwrap();
+
+        let usage = srv.state.store.usage(&user_id).await.unwrap();
+        assert_eq!(usage.len(), 1, "{name}");
+        let (_, me) = srv
+            .get_auth("/v1/me", Some(&s(&body, "access_token")))
+            .await;
+        assert_eq!(me["usage"][0]["messages"], 6, "{name}: /v1/me에 보인다");
+        assert_eq!(
+            (usage[0].messages, usage[0].bytes),
+            (6, 240),
+            "{name}: 같은 날은 더한다"
+        );
+        assert_eq!(
+            usage[0].day as i64,
+            clip_ferry_account::now_ms() / 86_400_000
+        );
+    }
 }

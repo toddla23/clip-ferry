@@ -9,7 +9,6 @@ use anyhow::{bail, Context};
 use clip_ferry_core::api::{Clip, ClipFerry, GroupHealth, ImageClip};
 use clip_ferry_core::session::{ConnectionStatus, EventSink};
 use clip_ferry_core::transfer::{sniff, MAX_IMAGE_BYTES};
-use clip_ferry_core::transport::TransportConfig;
 use tokio::io::AsyncReadExt;
 use tokio::sync::mpsc;
 
@@ -74,6 +73,10 @@ impl EventSink for Printer {
             ConnectionStatus::Reconnecting => eprintln!("reconnecting..."),
             ConnectionStatus::Disconnected => {}
         }
+    }
+
+    fn on_auth_required(&self) {
+        eprintln!("릴레이가 접속 토큰을 받지 않았습니다 (cf login --dev로 로그인)");
     }
 
     fn on_devices_changed(&self) {
@@ -168,7 +171,7 @@ pub async fn send_image(app: Arc<ClipFerry>, relay: &str, path: &Path) -> anyhow
         bail!("PNG, JPEG, GIF, WebP 이미지가 아닙니다");
     };
     let (sink, _removed) = Printer::new();
-    let session = app.start_session(relay, TransportConfig::default(), sink)?;
+    let session = app.start_session(relay, crate::account::transport_config(), sink)?;
     if !session.wait_connected(Duration::from_secs(5)).await {
         bail!("릴레이({relay})에 연결할 수 없습니다");
     }
@@ -205,7 +208,7 @@ async fn read_text(arg: Option<String>) -> anyhow::Result<String> {
 pub async fn send(app: Arc<ClipFerry>, relay: &str, text: Option<String>) -> anyhow::Result<()> {
     let text = read_text(text).await?;
     let (sink, _removed) = Printer::new();
-    let session = app.start_session(relay, TransportConfig::default(), sink)?;
+    let session = app.start_session(relay, crate::account::transport_config(), sink)?;
     if !session.wait_connected(Duration::from_secs(5)).await {
         bail!("릴레이({relay})에 연결할 수 없습니다");
     }
@@ -218,7 +221,7 @@ pub async fn send(app: Arc<ClipFerry>, relay: &str, text: Option<String>) -> any
 
 pub async fn listen(app: Arc<ClipFerry>, relay: &str) -> anyhow::Result<()> {
     let (sink, mut removed) = Printer::new();
-    let _session = app.start_session(relay, TransportConfig::default(), sink)?;
+    let _session = app.start_session(relay, crate::account::transport_config(), sink)?;
     tokio::select! {
         r = tokio::signal::ctrl_c() => r.map_err(Into::into),
         // 제거되면 더 받을 수 없으므로 알리고 끝낸다.

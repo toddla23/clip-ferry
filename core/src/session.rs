@@ -21,6 +21,8 @@ pub trait EventSink: Send + Sync {
     /// 다른 기기가 보낸 이미지가 다 도착했다 (크기·해시 확인 끝, 디코딩은 셸이 한다).
     fn on_image(&self, _image: ImageClip) {}
     fn on_status(&self, _status: ConnectionStatus) {}
+    /// 릴레이가 접속 토큰을 받지 않았다(F33). 셸은 "다시 로그인" 안내를 띄운다. 재연결은 계속된다.
+    fn on_auth_required(&self) {}
     /// 기기 목록(로스터)이 바뀌었다.
     fn on_devices_changed(&self) {}
     /// 키가 회전되어 새 에포크로 넘어갔다.
@@ -143,6 +145,7 @@ impl ClipFerry {
                         sink.on_status(ConnectionStatus::Disconnected);
                     }
                     Event::Reconnecting { .. } => sink.on_status(ConnectionStatus::Reconnecting),
+                    Event::Unauthorized => sink.on_auth_required(),
                     Event::Deliver(d) => {
                         match app.handle_deliver(&d.payload, Source::Relay, now_ms()) {
                             Ok(Incoming::Clip(clip)) => sink.on_clip(clip),

@@ -5,7 +5,6 @@ use std::time::Duration;
 
 use anyhow::bail;
 use clip_ferry_core::api::{ClipFerry, DeviceInfo, GroupHealth, Status};
-use clip_ferry_core::transport::TransportConfig;
 
 use crate::pair::sanitize;
 use crate::text::Printer;
@@ -49,7 +48,7 @@ async fn online_session(
     relay: &str,
 ) -> anyhow::Result<clip_ferry_core::session::Session> {
     let (sink, _removed) = Printer::new();
-    let session = app.start_session(relay, TransportConfig::default(), sink)?;
+    let session = app.start_session(relay, crate::account::transport_config(), sink)?;
     if !session.wait_connected(Duration::from_secs(5)).await {
         bail!("릴레이({relay})에 연결할 수 없습니다");
     }

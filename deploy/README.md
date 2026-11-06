@@ -165,6 +165,26 @@ docker compose --env-file deploy/.env.account -f deploy/compose.account.yml exec
 | `CF_ACCOUNT_GOOGLE_CLIENT_IDS` | 없음 | 받아 줄 구글 클라이언트 ID, 쉼표로 여러 개 (compose는 `CF_GOOGLE_CLIENT_IDS`) |
 | `CF_ACCOUNT_DEV_PAGES` | false | `/dev/google` 시험 페이지 (compose는 `CF_DEV_PAGES`) |
 | `CF_ACCOUNT_DEV_LOGIN` | false | 구글 없이 이메일만으로 계정을 만드는 `POST /v1/auth/dev` (개발 전용, compose는 `CF_DEV_LOGIN`) |
+| `CF_ACCOUNT_USAGE_SECRET` | 없음 | 릴레이가 사용량을 보낼 때 쓰는 공유 비밀 (`POST /internal/usage`). 비우면 그 경로를 열지 않는다 (compose는 `CF_USAGE_SECRET`) |
+
+## 릴레이가 접속 토큰을 확인하게 하기 (F33)
+
+릴레이에 계정 서버 주소를 주면 **로그인한 기기(접속 토큰)만** 연결할 수 있다. 계정별 동시 연결 수·분당 바이트를 따로 세고, 계정별 게시 수·바이트(내용 없음)를 1분마다 계정 서버에 보낸다.
+
+> 데스크톱·Android 앱에는 아직 로그인이 없다(F34·F35). 지금 Pi 릴레이에서 켜면 쓰고 있는 앱의 동기화가 끊긴다. 그래서 **앱 로그인이 생긴 뒤에 켠다.** 그전 시험은 PC에서 한다(`todo/F33-확인.md`).
+
+켤 때 (Pi):
+
+```bash
+echo "CF_USAGE_SECRET=$(openssl rand -hex 24)" >> deploy/.env.account
+# 계정 서버를 다시 올린다 (네트워크 이름 clip-ferry-account, 사용량 비밀)
+docker compose --env-file deploy/.env.account -f deploy/compose.account.yml up -d
+# 릴레이를 덧붙임과 함께 다시 올린다
+docker compose --env-file deploy/.env.account -f deploy/compose.yml -f deploy/compose.relay-auth.yml up -d
+docker compose -f deploy/compose.yml logs --tail 5 relay    # access tokens required (account server set)
+```
+
+끄려면 덧붙임 없이 `docker compose -f deploy/compose.yml up -d`.
 
 ## 클라우드로 옮길 때
 
@@ -182,3 +202,7 @@ docker compose --env-file deploy/.env.account -f deploy/compose.account.yml exec
 | `CF_RELAY_MAX_BYTES_PER_MIN` | 64 MiB | 연결당 분당 바이트 |
 | `CF_RELAY_MAX_CONNS_PER_IP` | 32 | IP당 동시 연결 |
 | `CF_RELAY_TRUST_PROXY` | false | 프록시 뒤에서 `X-Forwarded-For`로 IP를 센다 (compose는 `CF_TRUST_PROXY`) |
+| `CF_RELAY_ACCOUNT_URL` | 없음 | 계정 서버 주소. 주면 접속 토큰이 있는 연결만 받는다 (F33). 비우면 누구나 접속 |
+| `CF_RELAY_USAGE_SECRET` | 없음 | 사용량 보고 공유 비밀 (계정 서버의 `CF_ACCOUNT_USAGE_SECRET`과 같게). 비우면 보고하지 않는다 |
+| `CF_RELAY_MAX_CONNS_PER_ACCOUNT` | 16 | 계정당 동시 연결 (넘으면 HTTP 429) |
+| `CF_RELAY_MAX_BYTES_PER_MIN_PER_ACCOUNT` | 256 MiB | 계정당 분당 바이트 (넘으면 `RATE_LIMITED`) |

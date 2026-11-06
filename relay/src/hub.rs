@@ -5,6 +5,7 @@ use std::sync::{Arc, Mutex};
 
 use tokio::sync::{mpsc, watch};
 
+use crate::auth::Auth;
 use crate::metrics::Metrics;
 use crate::Config;
 
@@ -25,6 +26,7 @@ pub struct Hub {
 
 pub struct Shared {
     pub config: Config,
+    pub auth: Option<Arc<Auth>>,
     pub hub: Mutex<Hub>,
     pub metrics: Metrics,
     pub shutdown: watch::Receiver<bool>,
@@ -34,6 +36,7 @@ pub struct Shared {
 impl Shared {
     pub fn new(config: Config, shutdown: watch::Receiver<bool>) -> Self {
         Self {
+            auth: config.auth.clone().map(|c| Arc::new(Auth::new(c))),
             config,
             hub: Mutex::new(Hub::default()),
             metrics: Metrics::default(),

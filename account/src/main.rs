@@ -36,6 +36,9 @@ struct Args {
     /// 구글 로그인 시험 페이지 `GET /dev/google`
     #[arg(long, env = "CF_ACCOUNT_DEV_PAGES")]
     dev_pages: bool,
+    /// 릴레이가 사용량을 보낼 때 쓰는 공유 비밀 (릴레이의 CF_RELAY_USAGE_SECRET과 같게). 없으면 받지 않는다
+    #[arg(long, env = "CF_ACCOUNT_USAGE_SECRET", hide_env_values = true)]
+    usage_secret: Option<String>,
 }
 
 #[derive(Subcommand, Debug)]
@@ -95,6 +98,7 @@ async fn main() -> anyhow::Result<()> {
         ),
         dev_login: args.dev_login,
         dev_pages: args.dev_pages,
+        usage_secret: args.usage_secret.clone().filter(|s| !s.is_empty()),
     });
 
     // 만료된 갱신 토큰 정리 (한 시간마다)

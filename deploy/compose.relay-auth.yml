@@ -1,0 +1,18 @@
+# 릴레이가 접속 토큰을 확인하게 하는 덧붙임 (F33, D-019). 계정 서버(compose.account.yml)가 먼저 떠 있어야 한다.
+#   켜기: docker compose --env-file deploy/.env.account -f deploy/compose.yml -f deploy/compose.relay-auth.yml up -d
+#   끄기: 이 파일 없이 docker compose -f deploy/compose.yml up -d
+#
+# 켜면 로그인한 기기(접속 토큰)만 릴레이를 쓸 수 있다. 데스크톱·Android 앱에 로그인이 생기기(F34·F35) 전에 켜면
+# 지금 쓰는 앱의 동기화가 끊기므로 그때까지는 켜지 않는다.
+services:
+  relay:
+    environment:
+      # 같은 Docker 네트워크의 계정 서버 (Pi의 127.0.0.1:8788은 컨테이너에서 닿지 않는다)
+      CF_RELAY_ACCOUNT_URL: "http://account:8788"
+      CF_RELAY_USAGE_SECRET: "${CF_USAGE_SECRET:-}"
+    networks: [default, account]
+
+networks:
+  account:
+    name: clip-ferry-account
+    external: true

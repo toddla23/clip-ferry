@@ -1,3 +1,4 @@
+mod account;
 mod file_store;
 mod manage;
 mod pair;
@@ -10,7 +11,7 @@ use anyhow::{bail, Context};
 use clap::{Parser, Subcommand};
 use clip_ferry_core::api::{ClipFerry, Config, Status};
 use clip_ferry_core::crypto::GroupKey;
-use clip_ferry_core::transport::{Client, Event, TransportConfig};
+use clip_ferry_core::transport::{Client, Event};
 use file_store::FileSecretStore;
 
 /// clip-ferry 개발·검증용 CLI
@@ -81,6 +82,25 @@ enum Command {
         /// `invite`가 보여 준 텍스트 코드 또는 링크
         code: String,
     },
+    /// 계정 서버에 로그인한다 (개발용: 계정 서버가 --dev-login일 때). 이후 릴레이 연결에 접속 토큰을 싣는다
+    Login {
+        /// 개발용 로그인 (구글 로그인은 앱에서 한다. CLI는 이것만)
+        #[arg(long)]
+        dev: bool,
+        /// 계정 서버 주소
+        #[arg(long, env = "CF_ACCOUNT_URL", default_value = "http://127.0.0.1:8788")]
+        account: String,
+        /// 이메일 (개발용 계정의 이름표)
+        #[arg(long)]
+        email: String,
+        /// 표시 이름
+        #[arg(long, default_value = "")]
+        name: String,
+    },
+    /// 로그인한 계정과 기기 목록 (계정 서버 /v1/me)
+    Account,
+    /// 계정 서버에서 로그아웃하고 저장한 토큰을 지운다
+    Logout,
     /// 암호화 없이 릴레이만 시험한다 (원시 바이트)
     Debug {
         #[command(subcommand)]
@@ -175,6 +195,8 @@ fn render_status(status: &Status, relay: &str) -> String {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
+    let profile_dir = args.profiles_dir.join(&args.profile);
+    account::init(&profile_dir);
     match &args.command {
         None => Ok(()),
         Some(Command::Init { name }) => {
@@ -235,6 +257,19 @@ async fn main() -> anyhow::Result<()> {
             let app = open_profile(&args)?;
             pair::join(&app, code, args.relay.clone(), DEFAULT_RELAY).await
         }
+        Some(Command::Login {
+            dev,
+            account: url,
+            email,
+            name,
+        }) => {
+            if !*dev {
+                bail!("CLI는 개발용 로그인만 한다: cf login --dev --email …");
+            }
+            account::login_dev(&profile_dir, url, email, name).await
+        }
+        Some(Command::Account) => account::show(&profile_dir).await,
+        Some(Command::Logout) => account::logout(&profile_dir).await,
         Some(Command::Debug { action }) => match action {
             DebugAction::Sub { channel } => {
                 debug_sub(&args.relay_url(), parse_channel(channel)?).await
@@ -248,7 +283,7 @@ async fn main() -> anyhow::Result<()> {
 
 /// 릴레이에 붙어 `ServerHello`를 받으면 `connected`.
 async fn relay_state(relay: &str, channel: [u8; 32], tag: [u8; 16]) -> &'static str {
-    let (client, mut events) = Client::connect(relay, TransportConfig::default());
+    let (client, mut events) = Client::connect(relay, crate::account::transport_config());
     client.subscribe(channel, tag);
     let wait = async {
         while let Some(ev) = events.recv().await {
@@ -265,7 +300,7 @@ async fn relay_state(relay: &str, channel: [u8; 32], tag: [u8; 16]) -> &'static 
 }
 
 async fn debug_sub(relay: &str, channel: [u8; 32]) -> anyhow::Result<()> {
-    let (client, mut events) = Client::connect(relay, TransportConfig::default());
+    let (client, mut events) = Client::connect(relay, crate::account::transport_config());
     client.subscribe(channel, random_tag());
     loop {
         tokio::select! {
@@ -274,6 +309,7 @@ async fn debug_sub(relay: &str, channel: [u8; 32]) -> anyhow::Result<()> {
                 None => return Ok(()),
                 Some(Event::Connected(_)) => eprintln!("connected"),
                 Some(Event::Reconnecting { .. }) => eprintln!("reconnecting..."),
+                Some(Event::Unauthorized) => eprintln!("릴레이가 접속 토큰을 받지 않음 (cf login --dev)"),
                 Some(Event::Deliver(d)) => println!("{}", String::from_utf8_lossy(&d.payload)),
                 Some(Event::Error(e)) => eprintln!("error: {:?}", e.code()),
                 Some(_) => {}
@@ -283,7 +319,7 @@ async fn debug_sub(relay: &str, channel: [u8; 32]) -> anyhow::Result<()> {
 }
 
 async fn debug_pub(relay: &str, channel: [u8; 32], message: String) -> anyhow::Result<()> {
-    let (client, mut events) = Client::connect(relay, TransportConfig::default());
+    let (client, mut events) = Client::connect(relay, crate::account::transport_config());
     // 릴레이는 구독 중인 채널에만 게시를 허용한다.
     client.subscribe(channel, random_tag());
     let mut request_id = None;
@@ -293,6 +329,7 @@ async fn debug_pub(relay: &str, channel: [u8; 32], message: String) -> anyhow::R
                 request_id = Some(client.publish(channel, message.clone().into_bytes(), vec![]));
             }
             Event::Reconnecting { .. } => eprintln!("reconnecting..."),
+            Event::Unauthorized => bail!("릴레이가 접속 토큰을 받지 않음 (cf login --dev)"),
             Event::Ack(a) if Some(a.request_id) == request_id => {
                 println!("delivered={}", a.delivered);
                 return Ok(());
