@@ -1,6 +1,8 @@
 //! 릴레이 WebSocket 연결: 자동 재연결(지수 백오프), 재구독, 핑 (docs/03-protocol.md 5절).
 
 use std::collections::HashMap;
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -18,6 +20,44 @@ use crate::pb::{self, client_frame, relay_frame};
 /// WebSocket 서브프로토콜 이름.
 pub const SUBPROTOCOL: &str = "clip-ferry.v1";
 
+/// 릴레이 접속 토큰을 주는 곳 (D-019, F33). 연결할 때마다 불린다.
+///
+/// 셸이 계정 서버에서 받은 접속 토큰을 돌려준다(만료가 가까우면 갱신해서). 로그인하지 않았으면 `None`.
+/// 토큰은 `Authorization: Bearer`로 WebSocket 업그레이드 요청에 실린다.
+#[derive(Clone)]
+pub struct TokenSource(Arc<dyn Fn() -> TokenFuture + Send + Sync>);
+
+pub type TokenFuture = Pin<Box<dyn Future<Output = Option<String>> + Send>>;
+
+impl TokenSource {
+    pub fn new<F, Fut>(f: F) -> Self
+    where
+        F: Fn() -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Option<String>> + Send + 'static,
+    {
+        TokenSource(Arc::new(move || Box::pin(f())))
+    }
+
+    /// 늘 같은 토큰 (테스트용)
+    pub fn fixed(token: impl Into<String>) -> Self {
+        let token = token.into();
+        Self::new(move || {
+            let t = token.clone();
+            async move { Some(t) }
+        })
+    }
+
+    async fn get(&self) -> Option<String> {
+        (self.0)().await
+    }
+}
+
+impl std::fmt::Debug for TokenSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("TokenSource")
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct TransportConfig {
     pub ping_interval: Duration,
@@ -26,6 +66,8 @@ pub struct TransportConfig {
     pub connect_timeout: Duration,
     pub backoff_initial: Duration,
     pub backoff_max: Duration,
+    /// 접속 토큰 (계정 서버를 쓰는 릴레이). 없으면 토큰 없이 연결한다.
+    pub token: Option<TokenSource>,
 }
 
 impl Default for TransportConfig {
@@ -36,6 +78,7 @@ impl Default for TransportConfig {
             connect_timeout: Duration::from_secs(10),
             backoff_initial: Duration::from_secs(1),
             backoff_max: Duration::from_secs(60),
+            token: None,
         }
     }
 }
@@ -50,6 +93,9 @@ pub enum Event {
         attempt: u32,
         delay: Duration,
     },
+    /// 릴레이가 접속 토큰을 받지 않았다(HTTP 401: 없음·만료·위조). 다시 로그인이 필요할 수 있다.
+    /// 재연결은 계속 시도한다(그사이 토큰 공급자가 새 토큰을 줄 수 있다).
+    Unauthorized,
     Deliver(pb::Deliver),
     Ack(pb::Ack),
     Error(pb::Error),
@@ -128,20 +174,38 @@ fn frame_bytes(kind: client_frame::Kind) -> Message {
     Message::Binary(pb::ClientFrame { kind: Some(kind) }.encode_to_vec())
 }
 
-async fn connect(url: &str, config: &TransportConfig) -> Option<Ws> {
-    let mut request = url.into_client_request().ok()?;
+enum ConnectError {
+    Unauthorized,
+    Other,
+}
+
+async fn connect(url: &str, config: &TransportConfig) -> Result<Ws, ConnectError> {
+    let mut request = url.into_client_request().map_err(|_| ConnectError::Other)?;
     request.headers_mut().insert(
         "Sec-WebSocket-Protocol",
         HeaderValue::from_static(SUBPROTOCOL),
     );
-    let (ws, _) = timeout(
+    if let Some(source) = &config.token {
+        if let Some(token) = source.get().await {
+            if let Ok(v) = HeaderValue::from_str(&format!("Bearer {token}")) {
+                request.headers_mut().insert("Authorization", v);
+            }
+        }
+    }
+    match timeout(
         config.connect_timeout,
         tokio_tungstenite::connect_async(request),
     )
     .await
-    .ok()?
-    .ok()?;
-    Some(ws)
+    {
+        Ok(Ok((ws, _))) => Ok(ws),
+        Ok(Err(tokio_tungstenite::tungstenite::Error::Http(resp)))
+            if resp.status().as_u16() == 401 =>
+        {
+            Err(ConnectError::Unauthorized)
+        }
+        _ => Err(ConnectError::Other),
+    }
 }
 
 async fn run(
@@ -155,14 +219,20 @@ async fn run(
     let mut delay = config.backoff_initial;
 
     loop {
-        if let Some(ws) = connect(&url, &config).await {
-            attempt = 0;
-            delay = config.backoff_initial;
-            let end = session(ws, &config, &mut subs, &mut cmd_rx, &ev_tx).await;
-            let _ = ev_tx.send(Event::Disconnected);
-            if matches!(end, SessionEnd::Closed) {
-                return;
+        match connect(&url, &config).await {
+            Ok(ws) => {
+                attempt = 0;
+                delay = config.backoff_initial;
+                let end = session(ws, &config, &mut subs, &mut cmd_rx, &ev_tx).await;
+                let _ = ev_tx.send(Event::Disconnected);
+                if matches!(end, SessionEnd::Closed) {
+                    return;
+                }
             }
+            Err(ConnectError::Unauthorized) => {
+                let _ = ev_tx.send(Event::Unauthorized);
+            }
+            Err(ConnectError::Other) => {}
         }
 
         attempt += 1;

@@ -8,6 +8,7 @@ use prost::Message as _;
 use tokio::sync::mpsc;
 use tokio::time::timeout;
 
+use crate::auth::AccountGuard;
 use crate::hub::{IpGuard, Outbox, Shared, Subscriber};
 use crate::limits::Bucket;
 use crate::SUBPROTOCOL;
@@ -26,9 +27,16 @@ struct Conn {
     channels: HashSet<[u8; 32]>,
     frames: Bucket,
     bytes: Bucket,
+    /// 접속 토큰으로 확인한 계정 (확인을 끈 릴레이는 `None`)
+    account: Option<AccountGuard>,
 }
 
-pub async fn run_connection(mut socket: WebSocket, shared: Arc<Shared>, _guard: IpGuard) {
+pub async fn run_connection(
+    mut socket: WebSocket,
+    shared: Arc<Shared>,
+    _guard: IpGuard,
+    account: Option<AccountGuard>,
+) {
     shared.metrics.connection_opened();
 
     let negotiated = socket
@@ -69,6 +77,7 @@ pub async fn run_connection(mut socket: WebSocket, shared: Arc<Shared>, _guard: 
             cfg.max_bytes_per_min as f64,
             cfg.max_bytes_per_min as f64 / 60.0,
         ),
+        account,
         shared: shared.clone(),
     };
 
@@ -129,7 +138,11 @@ impl Conn {
                 .unwrap_or(0);
             return self.error(request_id, ErrorCode::TooLarge);
         }
-        if !self.frames.take(1.0) || !self.bytes.take(bytes.len() as f64) {
+        let account_ok = self
+            .account
+            .as_ref()
+            .map_or(true, |a| a.auth().take_bytes(&a.user, bytes.len()));
+        if !self.frames.take(1.0) || !self.bytes.take(bytes.len() as f64) || !account_ok {
             let request_id = match pb::ClientFrame::decode(bytes).ok().and_then(|f| f.kind) {
                 Some(client_frame::Kind::Publish(p)) => p.request_id,
                 _ => 0,
@@ -192,6 +205,10 @@ impl Conn {
         };
         if !self.channels.contains(&channel) {
             return self.error(p.request_id, ErrorCode::NotSubscribed);
+        }
+
+        if let Some(a) = &self.account {
+            a.auth().record_publish(&a.user, p.payload.len());
         }
 
         let targets: HashSet<[u8; 16]> =

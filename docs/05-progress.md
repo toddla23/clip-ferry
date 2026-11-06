@@ -42,7 +42,7 @@
 | F27 | 관측 · 남용 방지 | F26 | 대기 | |
 | **M7** | **계정 (D-019)** | | | |
 | F32 | 계정 서버 + 구글 로그인 검증 | F14b | 완료 | PC(메모리)·Pi(MariaDB)에서 실제 구글 로그인 확인, 세 OS + `account (MariaDB)` CI 통과(PR #27). 확인 문서: `todo/F32-확인.md` |
-| F33 | 릴레이 토큰 확인 · 계정별 제한 · 사용량 | F32 | 진행중 | |
+| F33 | 릴레이 토큰 확인 · 계정별 제한 · 사용량 | F32 | 진행중 | 구현·테스트 통과, 실제 실행 파일로 흐름 확인. Pi에서 켜는 것은 F34·F35 뒤. 확인 문서: `todo/F33-확인.md` |
 | F34 | 데스크톱 로그인 | F33 | 대기 | |
 | F35 | Android 로그인 | F33 | 대기 | |
 | F36 | iOS 로그인 (구글 + Apple) | F33, F25 | 대기 | |
@@ -61,6 +61,7 @@
 
 새 항목을 위에 추가한다. 형식: `YYYY-MM-DD F00 — 한 줄`
 
+- 2026-11-06 F33 — 릴레이 `auth.rs`(계정 서버 JWKS로 접속 토큰 확인, 401·503·429, 계정별 연결 수·분당 바이트, 계정별 사용량 1분마다 `POST /internal/usage`, 실패 시 되돌림), 코어 `TransportConfig.token`(`TokenSource`)·`Event::Unauthorized`·`EventSink::on_auth_required`, 계정 서버 `/internal/usage`·`usage_daily` 누적·`/v1/me`에 사용량, CLI `login --dev`·`account`·`logout`, `deploy/compose.relay-auth.yml`. 테스트: 릴레이 인증 7·계정 +1(MariaDB 포함). 실제 실행 파일(계정 서버+릴레이+CLI)로 미로그인 거부·로그인 연결·사용량 쌓임 확인. 진행중
 - 2026-11-06 F33 — 시작 (브랜치 `f33-relay-auth`)
 - 2026-11-06 F32 — 사용자 승인, PR #27 머지, 완료 처리
 - 2026-11-06 F31 — `v0.1.0` 태그(처음엔 옛 커밋에 붙어 Release가 안 돌아 다시 붙임) → Releases에 파일 5개(exe·dmg·deb·AppImage·apk). 남은 것: 폰·PC에 설치해 보기(`todo/F31-확인.md` 4절)

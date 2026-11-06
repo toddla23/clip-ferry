@@ -45,6 +45,15 @@ pub struct Device {
     pub last_seen_ms: i64,
 }
 
+/// 하루 사용량 (릴레이가 보낸 게시 수·바이트).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct UsageDay {
+    /// Unix 시간 기준 일 번호 (UTC)
+    pub day: i32,
+    pub messages: i64,
+    pub bytes: i64,
+}
+
 /// 갱신 토큰 교체 결과.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Rotate {
@@ -71,13 +80,13 @@ pub enum StoreError {
 pub type Result<T> = std::result::Result<T, StoreError>;
 
 pub enum Store {
-    Memory(MemStore),
+    Memory(Box<MemStore>),
     Maria(MariaStore),
 }
 
 impl Store {
     pub fn memory() -> Self {
-        Store::Memory(MemStore::default())
+        Store::Memory(Box::default())
     }
 
     /// MariaDB에 연결하고 마이그레이션을 적용한다.
@@ -199,6 +208,86 @@ impl Store {
         }
     }
 
+    /// 릴레이가 보낸 사용량을 `day`에 더한다. 없는 계정은 건너뛴다. 더한 계정 수를 돌려준다.
+    pub async fn add_usage(&self, day: i32, entries: &[(String, i64, i64)]) -> Result<u64> {
+        match self {
+            Store::Memory(m) => {
+                let mut g = m.lock();
+                let mut n = 0;
+                for (user, messages, bytes) in entries {
+                    if !g.users.contains_key(user) {
+                        continue;
+                    }
+                    let e = g.usage.entry((user.clone(), day)).or_insert((0, 0));
+                    e.0 += messages;
+                    e.1 += bytes;
+                    n += 1;
+                }
+                Ok(n)
+            }
+            Store::Maria(m) => {
+                let mut n = 0;
+                for (user, messages, bytes) in entries {
+                    // 없는 계정이면 SELECT가 비어 아무것도 넣지 않는다 (외래 키 오류를 피한다)
+                    let r = sqlx::query(
+                        "INSERT INTO usage_daily (user_id, day, messages, bytes) \
+                         SELECT id, ?, ?, ? FROM users WHERE id = ? \
+                         ON DUPLICATE KEY UPDATE messages = messages + VALUES(messages), \
+                         bytes = bytes + VALUES(bytes)",
+                    )
+                    .bind(day)
+                    .bind(messages)
+                    .bind(bytes)
+                    .bind(user)
+                    .execute(&m.pool)
+                    .await?;
+                    if r.rows_affected() > 0 {
+                        n += 1;
+                    }
+                }
+                Ok(n)
+            }
+        }
+    }
+
+    /// 계정의 일별 사용량 (날짜 순)
+    pub async fn usage(&self, user_id: &str) -> Result<Vec<UsageDay>> {
+        match self {
+            Store::Memory(m) => {
+                let g = m.lock();
+                let mut v: Vec<UsageDay> = g
+                    .usage
+                    .iter()
+                    .filter(|((u, _), _)| u == user_id)
+                    .map(|((_, day), (messages, bytes))| UsageDay {
+                        day: *day,
+                        messages: *messages,
+                        bytes: *bytes,
+                    })
+                    .collect();
+                v.sort_by_key(|d| d.day);
+                Ok(v)
+            }
+            Store::Maria(m) => {
+                let rows = sqlx::query(
+                    "SELECT day, messages, bytes FROM usage_daily WHERE user_id = ? ORDER BY day",
+                )
+                .bind(user_id)
+                .fetch_all(&m.pool)
+                .await?;
+                rows.iter()
+                    .map(|r| {
+                        Ok(UsageDay {
+                            day: r.try_get("day")?,
+                            messages: r.try_get("messages")?,
+                            bytes: r.try_get("bytes")?,
+                        })
+                    })
+                    .collect()
+            }
+        }
+    }
+
     /// 만료된 지 하루가 지난 갱신 토큰을 지운다. 지운 수를 돌려준다.
     pub async fn prune(&self, now: i64) -> Result<u64> {
         let cutoff = now - 24 * 60 * 60 * 1000;
@@ -265,6 +354,8 @@ struct MemInner {
     /// (계정, 기기) → 기기. 등록 순서를 지키려고 Vec
     devices: Vec<(String, Device)>,
     refresh: HashMap<[u8; 32], MemRefresh>,
+    /// (계정, 일) → (게시 수, 바이트)
+    usage: HashMap<(String, i32), (i64, i64)>,
 }
 
 struct MemRefresh {

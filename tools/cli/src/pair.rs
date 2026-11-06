@@ -5,7 +5,7 @@ use std::time::Duration;
 use anyhow::{bail, Context};
 use clip_ferry_core::api::{now_ms, ClipFerry};
 use clip_ferry_core::pairing::{Invite, InviteProblem, InviterEvent, JoinerEvent, INVITE_TTL_MS};
-use clip_ferry_core::transport::{Client, Event, TransportConfig};
+use clip_ferry_core::transport::{Client, Event};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::time::{sleep, timeout};
 
@@ -76,7 +76,7 @@ pub async fn invite(app: &ClipFerry, relay: String) -> anyhow::Result<()> {
         INVITE_TTL_MS / 60_000
     );
 
-    let (client, mut events) = Client::connect(&relay, TransportConfig::default());
+    let (client, mut events) = Client::connect(&relay, crate::account::transport_config());
     client.subscribe(pair_channel, random_tag());
 
     let mut lines = BufReader::new(tokio::io::stdin()).lines();
@@ -162,7 +162,7 @@ pub async fn join(
     let mut joiner = app.join(invite)?;
     let pair_channel = joiner.invite().pair_channel();
 
-    let (client, mut events) = Client::connect(&relay, TransportConfig::default());
+    let (client, mut events) = Client::connect(&relay, crate::account::transport_config());
     client.subscribe(pair_channel, random_tag());
 
     // 초대한 쪽이 아직 구독하기 전일 수 있으므로 응답이 올 때까지 다시 보낸다.
