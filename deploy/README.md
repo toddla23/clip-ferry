@@ -102,7 +102,9 @@ docker compose -f deploy/compose.yml down                        # 중지
    - 승인된 JavaScript 원본: `https://<기기>.<tailnet>.ts.net:8443` (Pi), `http://localhost:8788` (PC에서 시험)
    - 리디렉션 URI는 비워 둔다
 4. 만들어진 **클라이언트 ID**(`…apps.googleusercontent.com`)를 적는다. 클라이언트 보안 비밀은 쓰지 않는다
-   - 데스크톱·Android·iOS 클라이언트 ID는 F34~F36에서 더한다(`CF_GOOGLE_CLIENT_IDS`에 쉼표로)
+   - Android·iOS 클라이언트 ID는 F35·F36에서 더한다(`CF_GOOGLE_CLIENT_IDS`에 쉼표로)
+5. **데스크톱 앱용 클라이언트 (F34)**: 사용자 인증 정보 만들기 → OAuth 클라이언트 ID → 유형 **데스크톱 앱**(이름 예: `clip-ferry desktop`). 리디렉션 주소는 넣지 않는다(구글이 `http://127.0.0.1:<포트>`를 알아서 받는다)
+   - 만들어진 **클라이언트 ID**와 **클라이언트 보안 비밀**을 `.env.account`의 `CF_GOOGLE_DESKTOP_CLIENT_ID`, `CF_GOOGLE_DESKTOP_CLIENT_SECRET`에 넣는다. 보안 비밀은 계정 서버만 갖고 앱·저장소에는 넣지 않는다(D-020). `CF_GOOGLE_CLIENT_IDS`에는 따로 넣지 않아도 된다(서버가 더한다)
 
 ### 2. 설정 파일과 기동 (Pi)
 
@@ -121,6 +123,7 @@ docker compose --env-file deploy/.env.account -f deploy/compose.account.yml logs
 
 - `.env.account`는 git에 넣지 않는다(`.gitignore`). **서명 키를 바꾸면** 이미 발급한 접속 토큰이 모두 무효가 된다(앱은 갱신 토큰으로 새로 받는다). DB 암호는 볼륨을 처음 만들 때 정해지므로 나중에 바꾸려면 MariaDB 안에서 바꾼다.
 - 처음 빌드는 Pi에서 10~20분 걸린다.
+- 이 compose는 프로젝트 이름 `clip-ferry-account`를 쓴다(릴레이는 `deploy`). 그전에 `deploy` 프로젝트로 올린 계정 서버가 있으면 `network deploy_default has active endpoints` 오류가 난다. 옛 컨테이너를 지우고 다시 올린다(데이터는 Pi 폴더라 남는다): `docker rm -f deploy-account-1 deploy-mariadb-1`
 
 ### 3. `https://…:8443`으로 열기
 
@@ -163,6 +166,8 @@ docker compose --env-file deploy/.env.account -f deploy/compose.account.yml exec
 | `CF_ACCOUNT_MEMORY_STORE` | false | DB 없이 메모리 (개발 전용) |
 | `CF_ACCOUNT_SIGNING_KEY` | 없음(필수) | 접속 토큰 서명 키, base64url 32바이트 (`clip-ferry-account gen-key`로도 만든다) |
 | `CF_ACCOUNT_GOOGLE_CLIENT_IDS` | 없음 | 받아 줄 구글 클라이언트 ID, 쉼표로 여러 개 (compose는 `CF_GOOGLE_CLIENT_IDS`) |
+| `CF_ACCOUNT_GOOGLE_DESKTOP_CLIENT_ID` | 없음 | 데스크톱 앱 구글 로그인용 "데스크톱 앱" 클라이언트 ID (F34, compose는 `CF_GOOGLE_DESKTOP_CLIENT_ID`). 비우면 데스크톱 로그인을 끈다 |
+| `CF_ACCOUNT_GOOGLE_DESKTOP_CLIENT_SECRET` | 없음 | 그 클라이언트의 보안 비밀. ID와 함께 줘야 한다 (compose는 `CF_GOOGLE_DESKTOP_CLIENT_SECRET`) |
 | `CF_ACCOUNT_DEV_PAGES` | false | `/dev/google` 시험 페이지 (compose는 `CF_DEV_PAGES`) |
 | `CF_ACCOUNT_DEV_LOGIN` | false | 구글 없이 이메일만으로 계정을 만드는 `POST /v1/auth/dev` (개발 전용, compose는 `CF_DEV_LOGIN`) |
 | `CF_ACCOUNT_USAGE_SECRET` | 없음 | 릴레이가 사용량을 보낼 때 쓰는 공유 비밀 (`POST /internal/usage`). 비우면 그 경로를 열지 않는다 (compose는 `CF_USAGE_SECRET`) |
@@ -171,7 +176,7 @@ docker compose --env-file deploy/.env.account -f deploy/compose.account.yml exec
 
 릴레이에 계정 서버 주소를 주면 **로그인한 기기(접속 토큰)만** 연결할 수 있다. 계정별 동시 연결 수·분당 바이트를 따로 세고, 계정별 게시 수·바이트(내용 없음)를 1분마다 계정 서버에 보낸다.
 
-> 데스크톱·Android 앱에는 아직 로그인이 없다(F34·F35). 지금 Pi 릴레이에서 켜면 쓰고 있는 앱의 동기화가 끊긴다. 그래서 **앱 로그인이 생긴 뒤에 켠다.** 그전 시험은 PC에서 한다(`todo/F33-확인.md`).
+> 데스크톱 앱은 F34부터 로그인해야 동작한다. Android 앱에는 아직 로그인이 없다(F35). 지금 Pi 릴레이에서 켜면 Android 앱의 동기화가 끊긴다. 그래서 **F35 뒤에 켠다.** 그전 시험은 PC에서 한다(`todo/F33-확인.md`, `todo/F34-확인.md`).
 
 켤 때 (Pi):
 

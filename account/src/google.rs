@@ -218,9 +218,142 @@ impl GoogleVerifier {
     }
 }
 
+// ---------------------------------------------------------------- 데스크톱 인가 코드 교환 (F34)
+
+pub const GOOGLE_TOKEN_URL: &str = "https://oauth2.googleapis.com/token";
+
+/// 데스크톱 앱(구글 "데스크톱 앱" 클라이언트)이 받은 인가 코드를 ID 토큰으로 바꾼다.
+///
+/// 구글은 데스크톱 클라이언트에도 토큰 교환 때 클라이언트 보안 비밀을 요구한다. 그 값을 앱에 넣지 않고
+/// 이 서버만 갖는다(D-020). 앱은 PKCE(`code_verifier`)와 루프백 돌아올 주소로 코드를 받아 넘긴다.
+pub struct CodeExchange {
+    http: reqwest::Client,
+    token_url: String,
+    client_id: String,
+    client_secret: String,
+}
+
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+pub enum CodeError {
+    /// 코드가 틀렸거나 이미 썼거나 만료됨, `code_verifier`·돌아올 주소가 맞지 않음
+    #[error("구글이 인가 코드를 받지 않았습니다")]
+    Rejected,
+    #[error("구글 토큰 주소에 닿지 못했습니다")]
+    Unavailable,
+}
+
+#[derive(Deserialize)]
+struct CodeResponse {
+    id_token: Option<String>,
+}
+
+impl CodeExchange {
+    pub fn new(
+        token_url: impl Into<String>,
+        client_id: impl Into<String>,
+        client_secret: impl Into<String>,
+    ) -> Self {
+        let http = reqwest::Client::builder()
+            .timeout(Duration::from_secs(10))
+            .build()
+            .expect("HTTP 클라이언트");
+        CodeExchange {
+            http,
+            token_url: token_url.into(),
+            client_id: client_id.into(),
+            client_secret: client_secret.into(),
+        }
+    }
+
+    pub fn client_id(&self) -> &str {
+        &self.client_id
+    }
+
+    /// 인가 코드 → 구글 ID 토큰(검증 전). 검증은 `GoogleVerifier::verify`가 한다.
+    pub async fn exchange(
+        &self,
+        code: &str,
+        code_verifier: &str,
+        redirect_uri: &str,
+    ) -> Result<String, CodeError> {
+        let form = [
+            ("grant_type", "authorization_code"),
+            ("code", code),
+            ("code_verifier", code_verifier),
+            ("redirect_uri", redirect_uri),
+            ("client_id", &self.client_id),
+            ("client_secret", &self.client_secret),
+        ];
+        let resp = self
+            .http
+            .post(&self.token_url)
+            .form(&form)
+            .send()
+            .await
+            .map_err(|_| CodeError::Unavailable)?;
+        let status = resp.status();
+        if status.is_client_error() {
+            return Err(CodeError::Rejected);
+        }
+        if !status.is_success() {
+            return Err(CodeError::Unavailable);
+        }
+        let body: CodeResponse = resp.json().await.map_err(|_| CodeError::Unavailable)?;
+        body.id_token
+            .filter(|t| !t.is_empty())
+            .ok_or(CodeError::Rejected)
+    }
+}
+
+/// 데스크톱 앱의 돌아올 주소로 받아 주는 꼴: `http://127.0.0.1:<포트>` 또는 그 아래 경로.
+/// 다른 주소로 코드를 바꿔 주지 않는다(남의 웹 페이지가 코드를 가로채 쓰지 못하게).
+pub fn is_loopback_redirect(uri: &str) -> bool {
+    let Some(rest) = uri.strip_prefix("http://127.0.0.1:") else {
+        return false;
+    };
+    let (port, path) = match rest.find('/') {
+        Some(i) => (&rest[..i], &rest[i..]),
+        None => (rest, ""),
+    };
+    let port_ok = !port.is_empty()
+        && port.len() <= 5
+        && port.bytes().all(|b| b.is_ascii_digit())
+        && port.parse::<u32>().is_ok_and(|p| (1..=65535).contains(&p));
+    let path_ok = path.len() <= 64
+        && path
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"/-_".contains(&b));
+    port_ok && path_ok
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn loopback_redirects_only() {
+        for ok in [
+            "http://127.0.0.1:53124",
+            "http://127.0.0.1:53124/",
+            "http://127.0.0.1:1/callback",
+        ] {
+            assert!(is_loopback_redirect(ok), "{ok}");
+        }
+        for bad in [
+            "https://127.0.0.1:53124/",
+            "http://localhost:53124/",
+            "http://127.0.0.1/",
+            "http://127.0.0.1:/",
+            "http://127.0.0.1:0/",
+            "http://127.0.0.1:70000/",
+            "http://127.0.0.1:80@evil.com/",
+            "http://127.0.0.1:80/?x=1",
+            "http://127.0.0.1.evil.com:80/",
+            "http://evil.com/",
+        ] {
+            assert!(!is_loopback_redirect(bad), "{bad}");
+        }
+    }
 
     #[test]
     fn parses_max_age() {

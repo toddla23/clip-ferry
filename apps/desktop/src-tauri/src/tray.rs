@@ -124,7 +124,10 @@ pub fn update(app: &AppHandle, view: &AppView) {
     let Some(tray) = app.tray_by_id(TRAY_ID) else {
         return;
     };
-    let label = if view.stage == Stage::Setup {
+    let signed_in = view.account.is_some();
+    let label = if !signed_in {
+        "로그인 필요"
+    } else if view.stage == Stage::Setup {
         "설정 필요"
     } else if view.health != Health::Active {
         "다시 페어링 필요"
@@ -142,7 +145,7 @@ pub fn update(app: &AppHandle, view: &AppView) {
         // 그룹이 없거나 다시 페어링해야 할 때는 멈출 것이 없다.
         let _ = item
             .0
-            .set_enabled(view.stage == Stage::Ready && view.health == Health::Active);
+            .set_enabled(signed_in && view.stage == Stage::Ready && view.health == Health::Active);
     }
     let _ = tray.set_icon(Some(icon(tone(view))));
     let _ = tray.set_tooltip(Some(format!("clip-ferry — {label}")));

@@ -43,6 +43,16 @@ export interface AppView {
   receiveEnabled: boolean;
   paused: boolean;
   autostart: boolean;
+  account: AccountView | null;
+  accountUrl: string;
+  loginBusy: boolean;
+  loginMessage: string | null;
+  devLogin: boolean;
+}
+
+export interface AccountView {
+  email: string;
+  name: string;
 }
 
 export const CONNECTION_LABEL: Record<Connection, string> = {

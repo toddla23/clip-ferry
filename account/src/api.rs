@@ -5,6 +5,8 @@
 //! | `GET /healthz` | 살아 있음 |
 //! | `GET /v1/keys` | 접속 토큰 공개키(JWKS). 릴레이가 읽는다 |
 //! | `POST /v1/auth/google` `{id_token}` | 구글 ID 토큰 → 계정 + 토큰 |
+//! | `GET /v1/auth/google/desktop` | 데스크톱 앱이 쓸 구글 클라이언트 ID `{client_id}` (F34) |
+//! | `POST /v1/auth/google/code` `{code, code_verifier, redirect_uri}` | 데스크톱 인가 코드 → 계정 + 토큰 (F34, D-020) |
 //! | `POST /v1/auth/refresh` `{refresh_token}` | 새 접속·갱신 토큰 (옛 갱신 토큰은 못 쓴다) |
 //! | `POST /v1/auth/logout` `{refresh_token}` | 그 로그인의 갱신 토큰 무효화 |
 //! | `GET /v1/me` | 내 계정과 기기 (Bearer 접속 토큰) |
@@ -24,7 +26,7 @@ use axum::routing::{get, post, put};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 
-use crate::google::{GoogleError, GoogleVerifier};
+use crate::google::{is_loopback_redirect, CodeError, CodeExchange, GoogleError, GoogleVerifier};
 use crate::store::{Device, Identity, Rotate, Store, StoreError, UsageDay, User};
 use crate::tokens::{self, Signer};
 
@@ -35,6 +37,9 @@ pub struct AppState {
     pub store: Store,
     pub signer: Signer,
     pub google: GoogleVerifier,
+    /// 데스크톱 앱 구글 로그인(인가 코드 교환). 없으면 데스크톱 로그인 경로를 열지 않는다.
+    /// 클라이언트 ID는 `google`의 허용 목록에도 있어야 한다.
+    pub google_desktop: Option<CodeExchange>,
     /// `POST /v1/auth/dev` 허용 (개발 전용)
     pub dev_login: bool,
     /// `GET /dev/google` 시험 페이지 (개발 전용)
@@ -48,6 +53,8 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/healthz", get(|| async { "ok" }))
         .route("/v1/keys", get(keys))
         .route("/v1/auth/google", post(auth_google))
+        .route("/v1/auth/google/desktop", get(google_desktop_config))
+        .route("/v1/auth/google/code", post(auth_google_code))
         .route("/v1/auth/refresh", post(auth_refresh))
         .route("/v1/auth/logout", post(auth_logout))
         .route("/v1/me", get(me))
@@ -183,6 +190,60 @@ async fn auth_google(
     Json(body): Json<GoogleLogin>,
 ) -> ApiResult<Json<TokenResponse>> {
     let g = s.google.verify(&body.id_token).await?;
+    let who = Identity {
+        provider: "google".into(),
+        sub: g.sub,
+        email: g.email,
+        name: g.name,
+        picture_url: g.picture_url,
+    };
+    login(&s, &who).await
+}
+
+async fn google_desktop_config(
+    State(s): State<Arc<AppState>>,
+) -> ApiResult<Json<serde_json::Value>> {
+    let ex = s
+        .google_desktop
+        .as_ref()
+        .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "desktop_login_disabled"))?;
+    Ok(Json(serde_json::json!({ "client_id": ex.client_id() })))
+}
+
+#[derive(Deserialize)]
+struct CodeLogin {
+    code: String,
+    code_verifier: String,
+    redirect_uri: String,
+}
+
+/// 데스크톱 앱: 루프백으로 받은 인가 코드를 구글에서 ID 토큰으로 바꾸고, 그 토큰을 검증해 로그인한다.
+async fn auth_google_code(
+    State(s): State<Arc<AppState>>,
+    Json(body): Json<CodeLogin>,
+) -> ApiResult<Json<TokenResponse>> {
+    let ex = s
+        .google_desktop
+        .as_ref()
+        .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "desktop_login_disabled"))?;
+    if !is_loopback_redirect(&body.redirect_uri) {
+        return Err(ApiError::bad("bad_redirect_uri"));
+    }
+    // RFC 7636: 43~128자
+    let v = &body.code_verifier;
+    if !(43..=128).contains(&v.len()) || body.code.is_empty() || body.code.len() > 2048 {
+        return Err(ApiError::bad("bad_code"));
+    }
+    let id_token = ex
+        .exchange(&body.code, v, &body.redirect_uri)
+        .await
+        .map_err(|e| match e {
+            CodeError::Rejected => ApiError::new(StatusCode::UNAUTHORIZED, "invalid_code"),
+            CodeError::Unavailable => {
+                ApiError::new(StatusCode::SERVICE_UNAVAILABLE, "google_unavailable")
+            }
+        })?;
+    let g = s.google.verify(&id_token).await?;
     let who = Identity {
         provider: "google".into(),
         sub: g.sub,

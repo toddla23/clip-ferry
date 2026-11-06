@@ -18,7 +18,13 @@ qrcode = { version = "0.14", default-features = false }
 # 플랫폼 보안 저장소: Windows Credential Manager / macOS Keychain / Linux keyutils
 keyring = { version = "3", features = ["windows-native", "apple-native", "linux-native"] }
 
-tokio = { workspace = true, features = ["time"] }
+tokio = { workspace = true, features = ["time", "net", "io-util", "sync", "macros"] }
+# 계정 서버 호출 (F34)
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+# 구글 로그인 PKCE (F34)
+sha2 = "0.10"
+base64 = "0.22"
+getrandom = "0.2"
 # 클립보드 텍스트·이미지 읽기·쓰기
 arboard = { version = "3", default-features = false, features = ["image-data"] }
 # 이미지 인코딩(PNG)·디코딩(PNG·JPEG·GIF·WebP). 필요한 형식만 켠다.
@@ -41,4 +47,7 @@ objc2-foundation = { version = "0.3", default-features = false, features = ["std
 
 [dev-dependencies]
 tempfile = "3"
+# 실제 계정 서버(메모리 저장소)로 로그인·갱신·로그아웃을 시험한다
+clip-ferry-account = { path = "../../../account" }
+axum = "0.7"
 tokio = { workspace = true, features = ["rt", "macros", "time", "test-util"] }

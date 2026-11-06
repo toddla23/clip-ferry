@@ -8,7 +8,9 @@ use std::sync::Arc;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
 use clip_ferry_account::api::{router, AppState};
-use clip_ferry_account::google::{GoogleError, GoogleVerifier, KeySource, RemoteKeys};
+use clip_ferry_account::google::{
+    CodeExchange, GoogleError, GoogleVerifier, KeySource, RemoteKeys,
+};
 use clip_ferry_account::store::Store;
 use clip_ferry_account::tokens::{self, AccessClaims, Signer};
 use jsonwebtoken::{Algorithm, DecodingKey, EncodingKey, Header, Validation};
@@ -57,6 +59,7 @@ async fn start(store: Store, dev_login: bool) -> Server {
         store,
         signer: Signer::from_seed(&[42u8; 32]),
         google: GoogleVerifier::new(vec![CLIENT.into()], static_google_keys()),
+        google_desktop: None,
         dev_login,
         dev_pages: true,
         usage_secret: Some(USAGE_SECRET.into()),
@@ -618,4 +621,192 @@ async fn internal_usage_from_relay() {
             clip_ferry_account::now_ms() / 86_400_000
         );
     }
+}
+
+// ---------------------------------------------------------------- 데스크톱 인가 코드 (F34)
+
+const DESKTOP_SECRET: &str = "test-desktop-secret";
+const GOOD_CODE: &str = "good-code";
+const VERIFIER: &str = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
+
+/// 가짜 구글 토큰 주소. 맞는 코드·검증자·비밀이 오면 `id_token`을 준다. 받은 요청 수를 센다.
+async fn fake_google_token(id_token: String) -> (String, Arc<std::sync::atomic::AtomicUsize>) {
+    use axum::routing::post;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let hits = Arc::new(AtomicUsize::new(0));
+    let h = hits.clone();
+    let app = axum::Router::new().route(
+        "/token",
+        post(move |axum::Form(f): axum::Form<HashMap<String, String>>| {
+            let id_token = id_token.clone();
+            let h = h.clone();
+            async move {
+                h.fetch_add(1, Ordering::SeqCst);
+                let ok = f.get("grant_type").map(String::as_str) == Some("authorization_code")
+                    && f.get("code").map(String::as_str) == Some(GOOD_CODE)
+                    && f.get("code_verifier").map(String::as_str) == Some(VERIFIER)
+                    && f.get("client_id").map(String::as_str) == Some(CLIENT)
+                    && f.get("client_secret").map(String::as_str) == Some(DESKTOP_SECRET)
+                    && f.get("redirect_uri")
+                        .is_some_and(|u| u.starts_with("http://127.0.0.1:"));
+                if ok {
+                    (
+                        axum::http::StatusCode::OK,
+                        axum::Json(json!({ "id_token": id_token })),
+                    )
+                } else {
+                    (
+                        axum::http::StatusCode::BAD_REQUEST,
+                        axum::Json(json!({ "error": "invalid_grant" })),
+                    )
+                }
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    (format!("http://{addr}/token"), hits)
+}
+
+async fn start_desktop(token_url: &str) -> Server {
+    let state = Arc::new(AppState {
+        store: Store::memory(),
+        signer: Signer::from_seed(&[42u8; 32]),
+        google: GoogleVerifier::new(vec![CLIENT.into()], static_google_keys()),
+        google_desktop: Some(CodeExchange::new(token_url, CLIENT, DESKTOP_SECRET)),
+        dev_login: false,
+        dev_pages: false,
+        usage_secret: None,
+    });
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let app = router(state.clone());
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    Server {
+        base: format!("http://{addr}"),
+        http: reqwest::Client::new(),
+        state,
+    }
+}
+
+fn code_body(code: &str, verifier: &str, redirect: &str) -> Value {
+    json!({ "code": code, "code_verifier": verifier, "redirect_uri": redirect })
+}
+
+#[tokio::test]
+async fn desktop_code_login() {
+    let sub = new_sub();
+    let (token_url, hits) = fake_google_token(good_token(&sub)).await;
+    let srv = start_desktop(&token_url).await;
+    let redirect = "http://127.0.0.1:53124/";
+
+    let (st, cfg) = srv.get_auth("/v1/auth/google/desktop", None).await;
+    assert_eq!(st, 200);
+    assert_eq!(cfg["client_id"], CLIENT);
+
+    let (st, body) = srv
+        .post(
+            "/v1/auth/google/code",
+            code_body(GOOD_CODE, VERIFIER, redirect),
+        )
+        .await;
+    assert_eq!(st, 200, "{body}");
+    assert_eq!(body["user"]["email"], format!("{sub}@example.com"));
+    assert_eq!(body["user"]["provider"], "google");
+    let (st, _) = srv
+        .get_auth("/v1/me", Some(&s(&body, "access_token")))
+        .await;
+    assert_eq!(st, 200);
+    // 구글 화면 로그인과 같은 계정이 된다
+    let (_, again) = srv.google_login(good_token(&sub)).await;
+    assert_eq!(again["user"]["id"], body["user"]["id"]);
+
+    // 구글이 받지 않는 코드·검증자
+    let (st, e) = srv
+        .post(
+            "/v1/auth/google/code",
+            code_body("wrong", VERIFIER, redirect),
+        )
+        .await;
+    assert_eq!((st, s(&e, "error").as_str()), (401, "invalid_code"));
+    let other = "x".repeat(43);
+    let (st, _) = srv
+        .post(
+            "/v1/auth/google/code",
+            code_body(GOOD_CODE, &other, redirect),
+        )
+        .await;
+    assert_eq!(st, 401);
+
+    // 구글에 묻기 전에 막는 것: 루프백이 아닌 돌아올 주소, 짧은 검증자
+    let before = hits.load(std::sync::atomic::Ordering::SeqCst);
+    for bad in ["https://evil.example/cb", "http://localhost:53124/"] {
+        let (st, e) = srv
+            .post("/v1/auth/google/code", code_body(GOOD_CODE, VERIFIER, bad))
+            .await;
+        assert_eq!(
+            (st, s(&e, "error").as_str()),
+            (400, "bad_redirect_uri"),
+            "{bad}"
+        );
+    }
+    let (st, _) = srv
+        .post(
+            "/v1/auth/google/code",
+            code_body(GOOD_CODE, "short", redirect),
+        )
+        .await;
+    assert_eq!(st, 400);
+    assert_eq!(hits.load(std::sync::atomic::Ordering::SeqCst), before);
+}
+
+#[tokio::test]
+async fn desktop_code_login_checks_the_id_token() {
+    // 구글 토큰 주소가 (가로채여) 다른 클라이언트용·위조 토큰을 주어도 받지 않는다
+    let mut c = google_claims(&new_sub());
+    c["aud"] = json!("someone-else.apps.googleusercontent.com");
+    for token in [
+        id_token(KEY_A, KID_A, &c),
+        id_token(KEY_B, KID_A, &google_claims("x")),
+    ] {
+        let (token_url, _) = fake_google_token(token).await;
+        let srv = start_desktop(&token_url).await;
+        let (st, e) = srv
+            .post(
+                "/v1/auth/google/code",
+                code_body(GOOD_CODE, VERIFIER, "http://127.0.0.1:1/"),
+            )
+            .await;
+        assert_eq!((st, s(&e, "error").as_str()), (401, "invalid_id_token"));
+    }
+}
+
+#[tokio::test]
+async fn desktop_login_off_without_client() {
+    let srv = start(Store::memory(), false).await;
+    let (st, _) = srv.get_auth("/v1/auth/google/desktop", None).await;
+    assert_eq!(st, 404);
+    let (st, e) = srv
+        .post(
+            "/v1/auth/google/code",
+            code_body(GOOD_CODE, VERIFIER, "http://127.0.0.1:1/"),
+        )
+        .await;
+    assert_eq!(
+        (st, s(&e, "error").as_str()),
+        (404, "desktop_login_disabled")
+    );
+}
+
+#[tokio::test]
+async fn desktop_code_google_unreachable() {
+    let srv = start_desktop("http://127.0.0.1:9/token").await;
+    let (st, e) = srv
+        .post(
+            "/v1/auth/google/code",
+            code_body(GOOD_CODE, VERIFIER, "http://127.0.0.1:1/"),
+        )
+        .await;
+    assert_eq!((st, s(&e, "error").as_str()), (503, "google_unavailable"));
 }
