@@ -1,6 +1,11 @@
 # 계정 서버 + MariaDB (F32, D-019). 릴레이(compose.yml)와 따로 올린다.
 #   실행: docker compose --env-file deploy/.env.account -f deploy/compose.account.yml up -d --build
 # 값은 deploy/.env.account 에 둔다 (git에 넣지 않는다, deploy/README.md "계정 서버" 절).
+#
+# 프로젝트 이름을 따로 둔다. 없으면 폴더 이름(deploy)을 릴레이(compose.yml)와 같이 써서, 한쪽을 올릴 때
+# 다른 쪽 컨테이너를 orphan으로 보고 네트워크를 지우려다 실패한다.
+name: clip-ferry-account
+
 services:
   mariadb:
     image: mariadb:11.4

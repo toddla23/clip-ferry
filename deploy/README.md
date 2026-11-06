@@ -123,6 +123,7 @@ docker compose --env-file deploy/.env.account -f deploy/compose.account.yml logs
 
 - `.env.account`는 git에 넣지 않는다(`.gitignore`). **서명 키를 바꾸면** 이미 발급한 접속 토큰이 모두 무효가 된다(앱은 갱신 토큰으로 새로 받는다). DB 암호는 볼륨을 처음 만들 때 정해지므로 나중에 바꾸려면 MariaDB 안에서 바꾼다.
 - 처음 빌드는 Pi에서 10~20분 걸린다.
+- 이 compose는 프로젝트 이름 `clip-ferry-account`를 쓴다(릴레이는 `deploy`). 그전에 `deploy` 프로젝트로 올린 계정 서버가 있으면 `network deploy_default has active endpoints` 오류가 난다. 옛 컨테이너를 지우고 다시 올린다(데이터는 Pi 폴더라 남는다): `docker rm -f deploy-account-1 deploy-mariadb-1`
 
 ### 3. `https://…:8443`으로 열기
 
