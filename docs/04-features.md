@@ -342,7 +342,7 @@ CLI 명령 예시는 `cf` = `cargo run -q -p clip-ferry-cli --` 의 줄임이다
 ## F21. iOS 셸 기본 + 코어 바인딩 + 페어링 + 포그라운드 수신
 
 - **목표**: 아이폰 앱으로 그룹에 참여하고, 앱이 열려 있는 동안 PC 클립보드를 받는다.
-- **선행**: F20
+- **선행**: F19 (F20은 보류, D-017)
 - **범위**: `apps/ios`(SwiftUI, iOS 17+), xcframework 빌드 스크립트, UniFFI Swift, Keychain `SecretStore`(App Group 공유 액세스 그룹 — 확장들이 같이 씀), VisionKit QR 스캔·코드 입력·SAS·초대, 포그라운드에서 받은 텍스트·이미지 `UIPasteboard`에 쓰기
 - **사전 준비(사용자)**: Apple 개발자 계정, 번들 ID 확정(O-03)
 - **완료 조건**

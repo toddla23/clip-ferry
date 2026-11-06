@@ -3,6 +3,8 @@
 여러 기기(Windows, macOS, Android, iOS) 사이에서 클립보드의 텍스트와 이미지를 종단간 암호화로 주고받는 서비스.
 서버(릴레이)는 암호문을 중계만 하고 아무것도 저장하지 않는다.
 
+**내려받기**: [Releases](https://github.com/toddla23/clip-ferry/releases/latest) — 설치 방법은 [`docs/07-release.md`](docs/07-release.md).
+
 설계와 진행 상황은 [`docs/`](docs/)에 있다. 시작은 [`docs/01-overview.md`](docs/01-overview.md).
 
 ## 구성
