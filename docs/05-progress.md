@@ -50,6 +50,7 @@
 
 새 항목을 위에 추가한다. 형식: `YYYY-MM-DD F00 — 한 줄`
 
+- 2026-11-06 F31 — PR #24 머지. 첫 Release 시험 실행에서 Android NDK 경로 문제(`env` 컨텍스트는 러너 변수를 못 읽음) 수정 후 4개 작업 모두 성공. 다음: 수정 PR 머지 → `v0.1.0` 태그
 - 2026-11-05 F31 — 배포 워크플로 `release.yml`(v* 태그 → Releases: Windows NSIS, macOS 유니버설 dmg, Linux deb·AppImage, Android 서명 APK), Android 배포 서명 설정(환경 변수, 없으면 디버그 키), 배포 키 생성(저장소 밖), 문서 `docs/07-release.md`. Windows에서 `tauri build`(NSIS)·`assembleRelease`(배포 키 서명 확인) 성공. 진행중
 - 2026-11-05 F20 — 보류(사용자 결정, D-017). O-01은 기본안 A(D-016), iOS 번들 ID `app.clipferry.ios`(O-03)
 - 2026-11-05 F19 — PR #23 머지(세 OS CI 통과), 완료 처리
