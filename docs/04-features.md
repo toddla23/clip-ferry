@@ -426,19 +426,19 @@ CLI 명령 예시는 `cf` = `cargo run -q -p clip-ferry-cli --` 의 줄임이다
 
 공통 원칙: 계정 서버는 신원·기기 목록·사용량만 다룬다. 클립보드 내용과 그룹 키는 서버를 지나지 않는다(지나더라도 지금처럼 암호문). 개발·시험은 Pi + Tailscale에서 하고, 도메인·클라우드는 F40에서 정한다.
 
-새 크레이트(D-019로 허용 목록에 추가): `sqlx`(Postgres, rustls), 토큰 검증은 기존 `jsonwebtoken` + `reqwest`로 JWKS 조회.
+새 크레이트(D-019로 허용 목록에 추가): `sqlx`(MySQL 드라이버로 MariaDB, rustls), 토큰 검증은 기존 `jsonwebtoken` + `reqwest`로 JWKS 조회.
 
 ## F32. 계정 서버 + 구글 로그인 검증
 
 - **목표**: 앱이 구글 ID 토큰을 내면 계정 서버가 검증하고 계정을 만들어 접속 토큰을 준다.
 - **선행**: F14b (Pi 배포 환경)
 - **범위**
-  - `account/`(크레이트 `clip-ferry-account`, axum + Postgres, `sqlx` 마이그레이션)
+  - `account/`(크레이트 `clip-ferry-account`, axum + MariaDB, `sqlx` 마이그레이션)
   - 표: `users`(id, 구글 `sub`, 이메일, 이름, 사진 URL, 가입·마지막 로그인 시각), `identities`(제공자 + `sub`, Apple용 자리), `devices`(계정, `device_id`, 이름, 플랫폼, 등록·마지막 접속 시각), `refresh_tokens`(해시만), `usage_daily`(계정·날짜별 전송 수·바이트)
   - API: `POST /v1/auth/google {id_token}` → 구글 JWKS로 서명·`iss`·`aud`(허용 클라이언트 ID 목록)·`exp` 확인 → 계정 upsert → 접속 토큰(JWT, Ed25519 서명, 1시간) + 갱신 토큰(무작위, 30일, 쓸 때마다 교체), `POST /v1/auth/refresh`, `POST /v1/auth/logout`, `GET /v1/me`, `PUT /v1/devices/{device_id}`(이름·플랫폼 등록)
   - 접속 토큰 공개키를 `GET /v1/keys`로 공개(릴레이가 시작 시 읽음)
   - 로그: 요청 수·오류 집계만. 토큰·이메일은 로그 금지
-  - `deploy/`: Pi용 compose에 계정 서버 + Postgres(볼륨) 추가, `tailscale serve` 경로 추가. 구글 클라우드 콘솔 설정 절차(동의 화면 "테스트", 클라이언트 ID: 웹·데스크톱·Android·iOS)
+  - `deploy/`: Pi용 compose에 계정 서버 + MariaDB(볼륨) 추가, `tailscale serve` 경로 추가. 구글 클라우드 콘솔 설정 절차(동의 화면 "테스트", 클라이언트 ID: 웹·데스크톱·Android·iOS)
   - CLI `cf login --dev`: 개발 모드 계정 서버(`--dev-login` 켤 때만)에서 시험용 토큰을 받는다(D-010과 같은 개발 전용)
 - **범위 밖**: 릴레이 연동(F33), 앱 화면(F34~F36)
 - **완료 조건**
@@ -537,7 +537,7 @@ CLI 명령 예시는 `cf` = `cargo run -q -p clip-ferry-cli --` 의 줄임이다
 
 - **목표**: Pi가 아닌 공개 서버에서 누구나 로그인해 쓴다.
 - **선행**: F32~F39, **O-03·O-04 결정**
-- **범위**: 도메인, 클라우드에 릴레이 + 계정 서버 + Postgres(백업 포함), 앱 기본 서버 주소, 개인정보처리방침 게시, 구글 OAuth 동의 화면 프로덕션 전환·검수, 앱에서 `wss://`만 허용(D-014 정책)
+- **범위**: 도메인, 클라우드에 릴레이 + 계정 서버 + MariaDB(백업 포함), 앱 기본 서버 주소, 개인정보처리방침 게시, 구글 OAuth 동의 화면 프로덕션 전환·검수, 앱에서 `wss://`만 허용(D-014 정책)
 - **완료 조건·사용자 확인 방법**: 착수 때 합의
 
 ---
