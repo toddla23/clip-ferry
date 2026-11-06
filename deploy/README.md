@@ -90,7 +90,9 @@ docker compose -f deploy/compose.yml down                        # 중지
 
 ## 계정 서버 (F32, D-019)
 
-구글 로그인을 검증하고 릴레이 접속 토큰을 발급하는 서버와 MariaDB를 같은 Pi에 올린다. 릴레이와 별도의 compose 파일(`compose.account.yml`)이다. MariaDB 데이터는 Docker 볼륨 `account-db`에 남고, 포트는 밖으로 열지 않는다.
+구글 로그인을 검증하고 릴레이 접속 토큰을 발급하는 서버와 MariaDB를 같은 Pi에 올린다. 릴레이와 별도의 compose 파일(`compose.account.yml`)이다. MariaDB 포트는 밖으로 열지 않는다.
+
+**데이터 위치**: Pi의 폴더 `/var/lib/clip-ferry/mariadb`(바꾸려면 `.env.account`에 `CF_DB_DIR`). Docker 볼륨이 아니라서 컨테이너 재시작·삭제(`down`), 이미지 업데이트, `down -v`, `docker system prune --volumes`를 해도 남는다. 지워지는 것은 이 폴더를 직접 지울 때뿐이다. 폴더는 처음 기동 때 자동으로 만들어진다(MariaDB가 소유자를 바꾼다).
 
 ### 1. 구글 클라이언트 ID (한 번만)
 
@@ -130,6 +132,8 @@ curl https://<기기>.<tailnet>.ts.net:8443/healthz      # ok
 시험 페이지: `https://<기기>.<tailnet>.ts.net:8443/dev/google` (`CF_DEV_PAGES=true`일 때). 시험이 끝나면 `CF_DEV_PAGES=false`.
 
 ### 백업
+
+돌고 있는 DB의 폴더를 그대로 복사하면 깨질 수 있으므로 덤프로 뜬다. 매일 돌리려면 `crontab -e`에 같은 명령을 넣는다.
 
 ```bash
 docker compose --env-file deploy/.env.account -f deploy/compose.account.yml exec mariadb \

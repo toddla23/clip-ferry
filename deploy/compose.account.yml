@@ -11,8 +11,9 @@ services:
       MARIADB_PASSWORD: "${CF_DB_PASSWORD:?deploy/.env.account에 CF_DB_PASSWORD가 필요합니다}"
       MARIADB_RANDOM_ROOT_PASSWORD: "1"
     # 포트를 밖으로 열지 않는다. 계정 서버만 내부 네트워크로 붙는다.
+    # 데이터는 Pi의 폴더에 둔다(Docker 볼륨이 아니라). 컨테이너를 지우거나 `down -v`·`prune`을 해도 남는다.
     volumes:
-      - account-db:/var/lib/mysql
+      - "${CF_DB_DIR:-/var/lib/clip-ferry/mariadb}:/var/lib/mysql"
     healthcheck:
       test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
       interval: 10s
@@ -40,6 +41,3 @@ services:
       CF_ACCOUNT_GOOGLE_CLIENT_IDS: "${CF_GOOGLE_CLIENT_IDS:-}"
       CF_ACCOUNT_DEV_PAGES: "${CF_DEV_PAGES:-false}"
       CF_ACCOUNT_DEV_LOGIN: "${CF_DEV_LOGIN:-false}"
-
-volumes:
-  account-db:
