@@ -61,6 +61,7 @@
 
 새 항목을 위에 추가한다. 형식: `YYYY-MM-DD F00 — 한 줄`
 
+- 2026-11-06 F32 — Pi(MariaDB) 확인 통과: 실제 구글 로그인·기기 등록, 컨테이너 `down`/`up` 뒤 같은 계정·기기, DB 클라이언트로 3307 접속(tailscale serve TCP). 시험 중 수정: 0002 정렬 규칙(BINARY로 읽히던 문자열 칸), 마이그레이션 재컴파일(`build.rs`), DB 데이터를 Pi 폴더로. 남은 것: PR CI
 - 2026-11-06 F32 — PC(메모리 저장소)에서 실제 구글 계정으로 시험 페이지 확인 통과(로그인·내 계정·기기 등록·갱신 2번·로그아웃·테스트 사용자 외 차단). 시험 페이지 상대 경로 404 수정. 남은 것: CI `account (MariaDB)`, (선택) Pi 배포
 - 2026-11-06 F32 — `account/`(axum + MariaDB `sqlx`, 메모리 저장소 겸용): 구글 ID 토큰 검증(JWKS 캐시·`aud`·`iss`·만료·이메일 확인), 계정 upsert, 접속 토큰(EdDSA JWT 1시간, `GET /v1/keys`), 갱신 토큰(해시만 저장·교체·재사용 시 계정 전체 무효화), `/v1/me`·기기 등록, 개발용 로그인·시험 페이지, 마이그레이션 `0001_init.sql`, `deploy/compose.account.yml`·`Dockerfile.account`, CI `account (MariaDB)`. 테스트 18개 통과. 진행중
 - 2026-11-06 M7 — Apple 로그인 다시 포함(App Store 지침 4.8, 사용자 결정). iOS는 F36, 데스크톱·Android는 도메인 뒤 F41
