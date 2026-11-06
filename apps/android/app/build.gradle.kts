@@ -47,6 +47,8 @@ android {
 
     buildFeatures {
         compose = true
+        // 개발용 로그인 칸은 디버그 빌드에서만 보인다 (BuildConfig.DEBUG)
+        buildConfig = true
     }
 }
 
@@ -69,4 +71,8 @@ dependencies {
     implementation("androidx.camera:camera-lifecycle:$camerax")
     implementation("androidx.camera:camera-view:$camerax")
     implementation("com.google.mlkit:barcode-scanning:17.3.0")
+    // 구글 로그인 (F35). Credential Manager + Google ID. 구글 Play 서비스가 계정 선택 창을 띄운다.
+    implementation("androidx.credentials:credentials:1.5.0")
+    implementation("androidx.credentials:credentials-play-services-auth:1.5.0")
+    implementation("com.google.android.libraries.identity.googleid:googleid:1.1.1")
 }

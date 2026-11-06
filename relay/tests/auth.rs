@@ -35,6 +35,7 @@ async fn account() -> Account {
         signer: Signer::from_seed(&[9u8; 32]),
         google: GoogleVerifier::new(vec![], KeySource::Static(HashMap::new())),
         google_desktop: None,
+        google_android: None,
         dev_login: true,
         dev_pages: false,
         usage_secret: Some(SECRET.into()),

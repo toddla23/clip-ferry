@@ -36,6 +36,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -46,6 +47,7 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import kotlinx.coroutines.launch
 import uniffi.clip_ferry_ffi.Health
 
 class MainActivity : ComponentActivity() {
@@ -71,7 +73,7 @@ private fun MainScreen() {
         ActivityResultContracts.RequestPermission()
     ) { /* 거부해도 서비스는 돈다. 알림만 안 보인다. */
         val s = CoreController.state.value
-        if (s.serviceEnabled && s.hasGroup) ClipFerryService.start(context)
+        if (s.serviceEnabled && s.signedIn && s.hasGroup) ClipFerryService.start(context)
     }
     LaunchedEffect(Unit) {
         val needsAsk = Build.VERSION.SDK_INT >= 33 &&
@@ -79,7 +81,7 @@ private fun MainScreen() {
             PackageManager.PERMISSION_GRANTED
         if (needsAsk) {
             notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
-        } else if (state.serviceEnabled && state.hasGroup) {
+        } else if (state.serviceEnabled && state.signedIn && state.hasGroup) {
             ClipFerryService.start(context)
         }
     }
@@ -105,6 +107,8 @@ private fun MainScreen() {
         val pairing = state.pairing
         val mode = joinMode
         when {
+            // 로그인 전에는 로그인 화면만 보이고 연결하지 않는다 (F35)
+            !state.signedIn -> LoginScreen(state)
             pairing != null -> PairingScreen(pairing)
             !state.hasGroup && mode != null ->
                 JoinScreen(name, state.relayUrl, mode, onBack = { joinMode = null })
@@ -123,6 +127,7 @@ private fun MainScreen() {
                     note = "코드로 참여하거나 새 그룹을 만들 때 쓰는 주소입니다. " +
                         "QR로 참여하면 QR에 들어 있는 주소로 바뀝니다.",
                 ) {}
+                AccountCard(state)
             }
             else -> ReadyScreen(state, batteryExempt)
         }
@@ -185,6 +190,126 @@ private fun ReadyScreen(state: UiState, batteryExempt: Boolean) {
     BatteryCard(batteryExempt) {
         context.startActivity(
             Intent(android.provider.Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)
+        )
+    }
+
+    AccountCard(state)
+}
+
+/**
+ * 로그인 화면 (F35). 구글 계정 선택 창으로 로그인한다. 그룹이 있는 기기(업데이트한 기존 사용자)는
+ * 로그인하면 그룹·페어링을 그대로 이어서 쓴다.
+ */
+@Composable
+private fun LoginScreen(state: UiState) {
+    val activity = LocalContext.current as android.app.Activity
+    val scope = rememberCoroutineScope()
+    var showServer by rememberSaveable { mutableStateOf(false) }
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Text("clip-ferry 로그인", style = MaterialTheme.typography.titleLarge)
+            Text(
+                if (state.hasGroup) {
+                    "다시 로그인하면 이 기기의 그룹과 페어링은 그대로 이어서 씁니다."
+                } else {
+                    "구글 계정으로 로그인하세요. 클립보드 내용은 계정 서버를 지나지 않고, 기기끼리 암호화해서 주고받습니다."
+                },
+            )
+            if (state.loginBusy) {
+                Text("구글 로그인을 마치세요…", style = MaterialTheme.typography.bodyMedium)
+            } else {
+                Button(
+                    onClick = { scope.launch { CoreController.loginGoogle(activity) } },
+                    modifier = Modifier.fillMaxWidth(),
+                ) { Text("Google로 로그인") }
+            }
+            state.loginMessage?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+            TextButton(onClick = { showServer = !showServer }) { Text("서버 설정") }
+        }
+    }
+    if (showServer) AccountServerCard(state.accountUrl)
+    if (BuildConfig.DEBUG) DevLoginCard(state.loginBusy)
+}
+
+@Composable
+private fun AccountServerCard(saved: String) {
+    var text by remember(saved) { mutableStateOf(saved) }
+    var message by remember { mutableStateOf<String?>(null) }
+    var savedNote by remember { mutableStateOf(false) }
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("계정 서버 주소", style = MaterialTheme.typography.titleMedium)
+            OutlinedTextField(
+                value = text,
+                onValueChange = { text = it; message = null; savedNote = false },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth(),
+                supportingText = {
+                    when {
+                        message != null -> Text(message!!)
+                        savedNote -> Text("저장했습니다")
+                    }
+                },
+                isError = message != null,
+            )
+            Button(onClick = {
+                message = CoreController.setAccountUrl(text)
+                savedNote = message == null
+            }) { Text("저장") }
+            Text("로그아웃한 상태에서만 바꿀 수 있습니다.", style = MaterialTheme.typography.bodySmall)
+        }
+    }
+}
+
+/** 개발용 로그인 (디버그 빌드에서만, 계정 서버 `--dev-login`). 구글 없이 이메일만으로 계정을 만든다. */
+@Composable
+private fun DevLoginCard(busy: Boolean) {
+    val scope = rememberCoroutineScope()
+    var email by rememberSaveable { mutableStateOf("") }
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("개발용 로그인 (계정 서버 --dev-login, 개발 빌드에서만)", style = MaterialTheme.typography.titleSmall)
+            OutlinedTextField(
+                value = email,
+                onValueChange = { email = it },
+                singleLine = true,
+                label = { Text("이메일") },
+                modifier = Modifier.fillMaxWidth(),
+            )
+            OutlinedButton(
+                enabled = !busy && email.isNotBlank(),
+                onClick = { scope.launch { CoreController.loginDev(email) } },
+            ) { Text("로그인") }
+        }
+    }
+}
+
+/** 계정: 로그인한 이메일·이름과 로그아웃. 로그아웃해도 그룹·페어링은 남는다. */
+@Composable
+private fun AccountCard(state: UiState) {
+    val account = state.account ?: return
+    val scope = rememberCoroutineScope()
+    var confirm by remember { mutableStateOf(false) }
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("계정", style = MaterialTheme.typography.titleMedium)
+            Text(if (account.name.isBlank()) account.email else "${account.name} · ${account.email}")
+            Text("계정 서버: ${account.accountUrl}", style = MaterialTheme.typography.bodySmall)
+            OutlinedButton(onClick = { confirm = true }) { Text("로그아웃") }
+        }
+    }
+    if (confirm) {
+        AlertDialog(
+            onDismissRequest = { confirm = false },
+            title = { Text("로그아웃할까요?") },
+            text = { Text("연결을 끊습니다. 이 기기의 그룹과 페어링은 남아 있어 다시 로그인하면 이어서 씁니다.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    confirm = false
+                    scope.launch { CoreController.logout() }
+                }) { Text("로그아웃") }
+            },
+            dismissButton = { TextButton(onClick = { confirm = false }) { Text("취소") } },
         )
     }
 }
@@ -322,6 +447,12 @@ private fun StatusCard(state: UiState) {
             }
             if (state.link == Link.CONNECTED) {
                 Text("지금 연결된 기기 ${state.online}대 (이 기기 포함)")
+            }
+            if (state.authRejected && state.link != Link.CONNECTED) {
+                Text(
+                    "릴레이가 로그인을 받지 않았습니다. 다시 시도하는 중입니다",
+                    color = MaterialTheme.colorScheme.error,
+                )
             }
             if (removed) Text("이 기기는 그룹에서 제거되었습니다. 다시 페어링하세요.")
             if (stale) Text("너무 오래 연결되지 않았습니다. 다시 페어링해야 할 수 있습니다.")

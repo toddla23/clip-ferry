@@ -7,6 +7,7 @@
 //! | `POST /v1/auth/google` `{id_token}` | 구글 ID 토큰 → 계정 + 토큰 |
 //! | `GET /v1/auth/google/desktop` | 데스크톱 앱이 쓸 구글 클라이언트 ID `{client_id}` (F34) |
 //! | `POST /v1/auth/google/code` `{code, code_verifier, redirect_uri}` | 데스크톱 인가 코드 → 계정 + 토큰 (F34, D-020) |
+//! | `GET /v1/auth/google/android` | Android 앱이 Credential Manager에 넘길 웹 클라이언트 ID `{client_id}` (F35) |
 //! | `POST /v1/auth/refresh` `{refresh_token}` | 새 접속·갱신 토큰 (옛 갱신 토큰은 못 쓴다) |
 //! | `POST /v1/auth/logout` `{refresh_token}` | 그 로그인의 갱신 토큰 무효화 |
 //! | `GET /v1/me` | 내 계정과 기기 (Bearer 접속 토큰) |
@@ -40,6 +41,9 @@ pub struct AppState {
     /// 데스크톱 앱 구글 로그인(인가 코드 교환). 없으면 데스크톱 로그인 경로를 열지 않는다.
     /// 클라이언트 ID는 `google`의 허용 목록에도 있어야 한다.
     pub google_desktop: Option<CodeExchange>,
+    /// Android 앱이 `serverClientId`로 쓸 웹 클라이언트 ID (F35). 받은 ID 토큰의 `aud`가 이 값이다.
+    /// `google`의 허용 목록에 있어야 한다. 없으면 Android 로그인 경로를 열지 않는다.
+    pub google_android: Option<String>,
     /// `POST /v1/auth/dev` 허용 (개발 전용)
     pub dev_login: bool,
     /// `GET /dev/google` 시험 페이지 (개발 전용)
@@ -55,6 +59,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/v1/auth/google", post(auth_google))
         .route("/v1/auth/google/desktop", get(google_desktop_config))
         .route("/v1/auth/google/code", post(auth_google_code))
+        .route("/v1/auth/google/android", get(google_android_config))
         .route("/v1/auth/refresh", post(auth_refresh))
         .route("/v1/auth/logout", post(auth_logout))
         .route("/v1/me", get(me))
@@ -208,6 +213,16 @@ async fn google_desktop_config(
         .as_ref()
         .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "desktop_login_disabled"))?;
     Ok(Json(serde_json::json!({ "client_id": ex.client_id() })))
+}
+
+async fn google_android_config(
+    State(s): State<Arc<AppState>>,
+) -> ApiResult<Json<serde_json::Value>> {
+    let id = s
+        .google_android
+        .as_ref()
+        .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "android_login_disabled"))?;
+    Ok(Json(serde_json::json!({ "client_id": id })))
 }
 
 #[derive(Deserialize)]

@@ -6,9 +6,13 @@
 //! F16: 페어링(초대·참여·승인), 기기 목록(온라인 표시), 그룹 나가기, QR 칸 만들기.
 //! F17: 받은 텍스트·이미지를 셸에 넘긴다(셸이 클립보드에 쓴다).
 //! F18: 텍스트·이미지 보내기(셸이 클립보드에서 읽어 넘긴다).
+//! F35: 계정 로그인(셸이 받은 구글 ID 토큰 → 계정 서버). 로그인해야 릴레이에 연결하고,
+//!      모든 릴레이 연결에 접속 토큰을 싣는다(`account`).
+
+mod account;
 
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use clip_ferry_core::api::{Clip, ClipFerry, Config, Error, GroupHealth, ImageClip};
@@ -18,7 +22,16 @@ use clip_ferry_core::pairing::Invite;
 use clip_ferry_core::session::{ConnectionStatus, EventSink, SendError, Session};
 use clip_ferry_core::store::{SecretStore, StoreError};
 use clip_ferry_core::transfer;
-use clip_ferry_core::transport::TransportConfig;
+use clip_ferry_core::transport::{TokenSource, TransportConfig};
+
+use crate::account::{Account, TokenError};
+
+/// 계정 서버에 알리는 이 기기의 플랫폼 이름
+const PLATFORM: &str = if cfg!(target_os = "ios") {
+    "ios"
+} else {
+    "android"
+};
 
 uniffi::setup_scaffolding!();
 
@@ -81,6 +94,7 @@ pub trait SecretVault: Send + Sync {
 }
 
 /// 셸의 `SecretVault`를 코어의 `SecretStore`로 이어 준다.
+#[derive(Clone)]
 struct VaultAdapter(Arc<dyn SecretVault>);
 
 fn backend(e: FfiError) -> StoreError {
@@ -175,6 +189,38 @@ pub trait CoreEvents: Send + Sync {
     /// 다른 기기가 보낸 이미지(길이·해시 확인 끝). `mime`은 보낸 쪽이 적은 값이 아니라
     /// 머리말로 다시 확인한 형식(`image/png`·`image/jpeg`·`image/gif`·`image/webp`)이다.
     fn on_image(&self, from_name: String, mime: String, bytes: Vec<u8>);
+    /// 릴레이가 접속 토큰을 받지 않았다(F35). 다음 재연결 때 새 토큰을 받는다. 연결되면 사라지는 안내다.
+    fn on_auth_rejected(&self);
+    /// 계정 서버가 로그인을 받지 않아(만료·다른 곳에서 로그아웃·재사용) 로그인 정보를 지웠다.
+    /// 세션은 이미 닫았다. 셸은 로그인 화면으로 간다. `message`는 사용자에게 보여 줄 문장.
+    fn on_signed_out(&self, message: String);
+}
+
+/// 화면에 보여 줄 로그인 정보. 토큰은 들어 있지 않다.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct AccountInfo {
+    pub email: String,
+    pub name: String,
+    /// 로그인한 계정 서버 주소
+    pub account_url: String,
+}
+
+impl From<account::Profile> for AccountInfo {
+    fn from(p: account::Profile) -> Self {
+        AccountInfo {
+            email: p.email,
+            name: p.name,
+            account_url: p.account_url,
+        }
+    }
+}
+
+fn failed(reason: String) -> FfiError {
+    FfiError::Failed { reason }
+}
+
+fn not_signed_in() -> FfiError {
+    failed("먼저 로그인하세요".into())
 }
 
 /// 코어 이벤트를 셸 콜백으로 옮긴다.
@@ -182,6 +228,7 @@ pub trait CoreEvents: Send + Sync {
 struct EventAdapter {
     events: Arc<dyn CoreEvents>,
     online: Arc<Mutex<Vec<DeviceId>>>,
+    account: Arc<Account>,
 }
 
 impl EventSink for EventAdapter {
@@ -203,6 +250,11 @@ impl EventSink for EventAdapter {
             self.online.lock().unwrap().clear();
         }
         self.events.on_status(status.into());
+    }
+
+    fn on_auth_required(&self) {
+        self.account.invalidate_access();
+        self.events.on_auth_rejected();
     }
 
     fn on_devices_changed(&self) {
@@ -294,7 +346,11 @@ pub struct ClipFerryClient {
     app: Arc<ClipFerry>,
     runtime: tokio::runtime::Runtime,
     /// 보내는 쪽이 잠금을 오래 쥐지 않도록 `Arc`로 꺼내 쓴다.
-    session: Mutex<Option<Arc<Session>>>,
+    /// 로그인이 끊기면 접속 토큰 공급자가 비운다(그래서 `Arc`로 나눠 쥔다).
+    session: Arc<Mutex<Option<Arc<Session>>>>,
+    account: Arc<Account>,
+    /// 이 실행에서 계정 서버에 기기를 올렸는가(세션을 열 때 한 번)
+    registered: Arc<AtomicBool>,
     online: Arc<Mutex<Vec<DeviceId>>>,
     pairing: Mutex<Option<Pairing>>,
     /// 페어링을 새로 시작하거나 닫을 때마다 늘린다. 이전 진행의 늦은 알림을 버리는 데 쓴다.
@@ -310,7 +366,8 @@ impl ClipFerryClient {
         std::fs::create_dir_all(&dir).map_err(|_| FfiError::Failed {
             reason: "데이터 폴더를 만들 수 없습니다".into(),
         })?;
-        let app = ClipFerry::open(Config { data_dir: dir }, Box::new(VaultAdapter(vault)))?;
+        let vault = VaultAdapter(vault);
+        let app = ClipFerry::open(Config { data_dir: dir }, Box::new(vault.clone()))?;
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
             .enable_all()
@@ -322,7 +379,9 @@ impl ClipFerryClient {
         Ok(Arc::new(Self {
             app: Arc::new(app),
             runtime,
-            session: Mutex::new(None),
+            session: Arc::new(Mutex::new(None)),
+            account: Arc::new(Account::new(Box::new(vault))),
+            registered: Arc::new(AtomicBool::new(false)),
             online: Arc::new(Mutex::new(Vec::new())),
             pairing: Mutex::new(None),
             pair_gen: Arc::new(AtomicU64::new(0)),
@@ -383,22 +442,29 @@ impl ClipFerryClient {
     }
 
     /// 릴레이에 (다시) 연결하는 세션을 시작한다. 이미 있으면 닫고 새로 연다.
-    /// 연결 결과는 `events`로 온다.
+    /// 로그인하지 않았으면 열지 않는다. 연결 결과는 `events`로 온다.
     pub fn start(&self, relay_url: String, events: Arc<dyn CoreEvents>) -> Result<(), FfiError> {
         let url = check_relay(&relay_url)?;
+        if !self.account.is_signed_in() {
+            return Err(not_signed_in());
+        }
+        let config = self.transport_config(Some(events.clone()));
         let _guard = self.runtime.enter();
         let mut slot = self.session.lock().unwrap();
         *slot = None;
         self.online.lock().unwrap().clear();
         let session = self.app.start_session(
             url,
-            TransportConfig::default(),
+            config,
             Arc::new(EventAdapter {
                 events,
                 online: self.online.clone(),
+                account: self.account.clone(),
             }),
         )?;
         *slot = Some(Arc::new(session));
+        drop(slot);
+        self.register_device_once();
         Ok(())
     }
 
@@ -443,11 +509,15 @@ impl ClipFerryClient {
         listener: Arc<dyn PairListener>,
     ) -> Result<InviteInfo, FfiError> {
         let url = check_relay(&relay_url)?;
+        if !self.account.is_signed_in() {
+            return Err(not_signed_in());
+        }
+        let config = self.transport_config(None);
         let _guard = self.runtime.enter();
         let mut slot = self.pairing.lock().unwrap();
         *slot = None;
         let forward = self.forwarder(listener);
-        let flow = pair_flow::start_invite(&self.app, url, TransportConfig::default(), move |u| {
+        let flow = pair_flow::start_invite(&self.app, url, config, move |u| {
             forward(match u {
                 InviteUpdate::Request { joiner_name, sas } => PairEvent::Request {
                     peer_name: joiner_name,
@@ -489,11 +559,15 @@ impl ClipFerryClient {
         default_relay: String,
         listener: Arc<dyn PairListener>,
     ) -> Result<String, FfiError> {
+        if !self.account.is_signed_in() {
+            return Err(not_signed_in());
+        }
         let invite = Invite::parse(&code).map_err(pair_flow::StartError::from)?;
         let relay = match invite.relay() {
             Some(r) => check_relay(r)?.to_string(),
             None => check_relay(&default_relay)?.to_string(),
         };
+        let config = self.transport_config(None);
         let _guard = self.runtime.enter();
         let mut slot = self.pairing.lock().unwrap();
         *slot = None;
@@ -503,7 +577,7 @@ impl ClipFerryClient {
             &code,
             Some(relay.clone()),
             &relay,
-            TransportConfig::default(),
+            config,
             move |u| {
                 forward(match u {
                     JoinUpdate::Connected => PairEvent::Connected,
@@ -528,9 +602,126 @@ impl ClipFerryClient {
         self.pair_gen.fetch_add(1, Ordering::SeqCst);
         *self.pairing.lock().unwrap() = None;
     }
+
+    // ------------------------------------------------------------ 계정 (F35)
+
+    /// 로그인 정보. 로그인하지 않았으면 `None`.
+    pub fn account(&self) -> Option<AccountInfo> {
+        self.account.profile().map(Into::into)
+    }
+
+    pub fn is_signed_in(&self) -> bool {
+        self.account.is_signed_in()
+    }
+
+    /// 구글 로그인 창(Android Credential Manager의 `serverClientId`)에 넘길 웹 클라이언트 ID를
+    /// 계정 서버에서 받는다. 네트워크를 쓰므로 메인 스레드가 아닌 곳에서 부른다.
+    pub fn google_client_id(&self, account_url: String) -> Result<String, FfiError> {
+        self.runtime
+            .block_on(self.account.google_client_id(&account_url))
+            .map_err(failed)
+    }
+
+    /// 구글 ID 토큰으로 로그인한다. 갱신 토큰은 보안 저장소에 둔다. 메인 스레드가 아닌 곳에서 부른다.
+    pub fn login_google(
+        &self,
+        account_url: String,
+        id_token: String,
+    ) -> Result<AccountInfo, FfiError> {
+        let p = self
+            .runtime
+            .block_on(self.account.google_login(&account_url, &id_token))
+            .map_err(failed)?;
+        self.registered.store(false, Ordering::SeqCst);
+        Ok(p.into())
+    }
+
+    /// 개발용 로그인 (계정 서버 `--dev-login`). 셸은 디버그 빌드에서만 보여 준다.
+    pub fn login_dev(&self, account_url: String, email: String) -> Result<AccountInfo, FfiError> {
+        let p = self
+            .runtime
+            .block_on(self.account.dev_login(&account_url, &email))
+            .map_err(failed)?;
+        self.registered.store(false, Ordering::SeqCst);
+        Ok(p.into())
+    }
+
+    /// 로그아웃: 연결과 페어링을 닫고, 계정 서버에 알린 뒤(실패해도) 이 기기의 로그인 정보를 지운다.
+    /// 그룹·페어링은 그대로다. 메인 스레드가 아닌 곳에서 부른다.
+    pub fn logout(&self) {
+        self.stop();
+        self.cancel_pairing();
+        self.runtime.block_on(self.account.logout());
+        self.registered.store(false, Ordering::SeqCst);
+    }
 }
 
 impl ClipFerryClient {
+    /// 릴레이 연결 설정: 연결할 때마다 계정의 접속 토큰을 싣는다(만료가 가까우면 갱신).
+    /// 계정 서버가 로그인을 받지 않으면 세션을 닫고 `events`에 알린다(페어링은 그냥 실패한다).
+    fn transport_config(&self, events: Option<Arc<dyn CoreEvents>>) -> TransportConfig {
+        let account = self.account.clone();
+        let session = self.session.clone();
+        let online = self.online.clone();
+        let handle = self.runtime.handle().clone();
+        TransportConfig {
+            token: Some(TokenSource::new(move || {
+                let account = account.clone();
+                let session = session.clone();
+                let online = online.clone();
+                let events = events.clone();
+                let handle = handle.clone();
+                async move {
+                    match account.token().await {
+                        Ok(token) => Some(token),
+                        Err(TokenError::SignedOut) => {
+                            // 이 연결 작업 안에서 세션을 닫지 않는다(자기 자신을 멈추게 된다).
+                            if let Some(events) = events {
+                                handle.spawn(async move {
+                                    let closed = session.lock().unwrap().take();
+                                    drop(closed);
+                                    online.lock().unwrap().clear();
+                                    events.on_signed_out(
+                                        "로그인이 만료되었습니다. 다시 로그인하세요".into(),
+                                    );
+                                });
+                            }
+                            None
+                        }
+                        // 계정 서버에 닿지 않으면 토큰 없이 시도하고, 다음 재연결 때 다시 받는다.
+                        Err(TokenError::Unavailable) => None,
+                    }
+                }
+            })),
+            ..TransportConfig::default()
+        }
+    }
+
+    /// 이 기기를 계정의 기기 목록에 올린다(이름·플랫폼). 실패해도 동작에는 상관없다.
+    fn register_device_once(&self) {
+        if self.registered.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        let Ok(status) = self.app.status() else {
+            self.registered.store(false, Ordering::SeqCst);
+            return;
+        };
+        let id: String = status
+            .device_id
+            .0
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        let name = status.device_name;
+        let account = self.account.clone();
+        let registered = self.registered.clone();
+        self.runtime.spawn(async move {
+            if account.register_device(&id, &name, PLATFORM).await.is_err() {
+                registered.store(false, Ordering::SeqCst);
+            }
+        });
+    }
+
     fn current_session(&self) -> Result<Arc<Session>, FfiError> {
         self.session
             .lock()
@@ -604,6 +795,8 @@ mod tests {
         online: Mutex<Vec<u32>>,
         texts: Mutex<Vec<(String, String)>>,
         images: Mutex<Vec<(String, String, Vec<u8>)>>,
+        auth_rejected: Mutex<u32>,
+        signed_out: Mutex<Vec<String>>,
     }
 
     impl CoreEvents for Recorder {
@@ -619,6 +812,12 @@ mod tests {
         }
         fn on_image(&self, from_name: String, mime: String, bytes: Vec<u8>) {
             self.images.lock().unwrap().push((from_name, mime, bytes));
+        }
+        fn on_auth_rejected(&self) {
+            *self.auth_rejected.lock().unwrap() += 1;
+        }
+        fn on_signed_out(&self, message: String) {
+            self.signed_out.lock().unwrap().push(message);
         }
     }
 
@@ -659,25 +858,80 @@ mod tests {
 
     struct Phone {
         client: Arc<ClipFerryClient>,
+        vault: Arc<MemVault>,
         _dir: tempfile::TempDir,
     }
 
-    fn phone(name: &str, group: bool) -> Phone {
+    /// 테스트들이 같이 쓰는 계정 서버(메모리 저장소, 개발용 로그인). 따로 만든 런타임에서 돈다.
+    struct AccountServer {
+        rt: tokio::runtime::Runtime,
+        url: String,
+    }
+
+    fn account_server() -> &'static AccountServer {
+        use clip_ferry_account::api::{router, AppState};
+        use clip_ferry_account::google::{GoogleVerifier, KeySource};
+        static SERVER: std::sync::OnceLock<AccountServer> = std::sync::OnceLock::new();
+        SERVER.get_or_init(|| {
+            let rt = tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(1)
+                .enable_all()
+                .build()
+                .unwrap();
+            let state = AppState {
+                store: clip_ferry_account::store::Store::memory(),
+                signer: clip_ferry_account::tokens::Signer::from_seed(&[5u8; 32]),
+                google: GoogleVerifier::new(
+                    vec!["web.apps".into()],
+                    KeySource::Static(Default::default()),
+                ),
+                google_desktop: None,
+                google_android: Some("web.apps".into()),
+                dev_login: true,
+                dev_pages: false,
+                usage_secret: None,
+            };
+            let app = router(Arc::new(state));
+            let url = rt.block_on(async {
+                let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+                let addr = listener.local_addr().unwrap();
+                tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+                format!("http://{addr}")
+            });
+            AccountServer { rt, url }
+        })
+    }
+
+    /// 로그인하지 않은 폰
+    fn signed_out_phone(name: &str, group: bool) -> Phone {
         let dir = tempfile::tempdir().unwrap();
-        let client = ClipFerryClient::open(
-            dir.path().display().to_string(),
-            Arc::new(MemVault::default()),
-        )
-        .unwrap();
+        let vault = Arc::new(MemVault::default());
+        let client =
+            ClipFerryClient::open(dir.path().display().to_string(), vault.clone()).unwrap();
         client.init_device(name.into()).unwrap();
         if group {
             client.create_group().unwrap();
         }
-        Phone { client, _dir: dir }
+        Phone {
+            client,
+            vault,
+            _dir: dir,
+        }
     }
 
-    /// 테스트용 릴레이를 따로 만든 런타임에서 띄운다.
-    fn relay() -> (
+    /// 개발용 로그인까지 한 폰
+    fn phone(name: &str, group: bool) -> Phone {
+        let p = signed_out_phone(name, group);
+        p.client
+            .login_dev(account_server().url.clone(), "me@test.dev".into())
+            .unwrap();
+        p
+    }
+
+    /// 테스트용 릴레이를 따로 만든 런타임에서 띄운다. `auth`면 접속 토큰을 확인한다.
+    fn relay_with(
+        auth: bool,
+    ) -> (
         tokio::runtime::Runtime,
         clip_ferry_relay::RelayHandle,
         String,
@@ -687,18 +941,35 @@ mod tests {
             .enable_all()
             .build()
             .unwrap();
+        let auth = auth.then(|| clip_ferry_relay::auth::AuthConfig::new(&account_server().url));
         let handle = rt.block_on(async {
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-            clip_ferry_relay::spawn(
+            let relay = clip_ferry_relay::spawn(
                 listener,
                 clip_ferry_relay::Config {
                     max_frames_per_sec: 1000,
+                    auth,
                     ..clip_ferry_relay::Config::default()
                 },
-            )
+            );
+            for _ in 0..100 {
+                if relay.auth_ready() {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+            relay
         });
         let url = format!("ws://{}", handle.local_addr());
         (rt, handle, url)
+    }
+
+    fn relay() -> (
+        tokio::runtime::Runtime,
+        clip_ferry_relay::RelayHandle,
+        String,
+    ) {
+        relay_with(false)
     }
 
     #[test]
@@ -1134,5 +1405,212 @@ mod tests {
         // 다시 새 그룹을 만들 수 있다.
         p.client.create_group().unwrap();
         assert!(p.client.has_group());
+    }
+
+    // ------------------------------------------------------------ 계정 (F35)
+
+    /// 계정 서버에 개발용 로그인으로 접속 토큰을 받아 `/v1/me`를 읽는다.
+    fn me(email: &str) -> serde_json::Value {
+        let srv = account_server();
+        srv.rt.block_on(async {
+            let http = reqwest::Client::new();
+            let login: serde_json::Value = http
+                .post(format!("{}/v1/auth/dev", srv.url))
+                .json(&serde_json::json!({ "email": email }))
+                .send()
+                .await
+                .unwrap()
+                .json()
+                .await
+                .unwrap();
+            http.get(format!("{}/v1/me", srv.url))
+                .bearer_auth(login["access_token"].as_str().unwrap())
+                .send()
+                .await
+                .unwrap()
+                .json()
+                .await
+                .unwrap()
+        })
+    }
+
+    /// 로그인 전에는 연결·페어링을 하지 않는다. 로그인하면 되고, 다시 열어도 로그인이 남는다.
+    /// 로그아웃하면 보안 저장소에서 지우고 다시 연결하지 않는다. 그룹은 그대로다.
+    #[test]
+    fn login_is_required_kept_and_cleared() {
+        let p = signed_out_phone("폰", true);
+        assert!(!p.client.is_signed_in());
+        assert_eq!(p.client.account(), None);
+        let err = p
+            .client
+            .start("ws://127.0.0.1:1".into(), Arc::new(Recorder::default()))
+            .unwrap_err();
+        assert!(matches!(err, FfiError::Failed { reason } if reason.contains("로그인")));
+        assert!(!p.client.is_running());
+        assert!(p
+            .client
+            .start_invite("ws://127.0.0.1:1".into(), Arc::new(PairRecorder::default()))
+            .is_err());
+
+        // 잘못된 주소·꺼진 계정 서버는 이해할 수 있는 오류
+        assert!(p.client.login_dev("ws://x".into(), "a@b.c".into()).is_err());
+        let err = p
+            .client
+            .login_dev("http://127.0.0.1:1".into(), "a@b.c".into())
+            .unwrap_err();
+        assert!(err.to_string().contains("연결하지 못했습니다"), "{err}");
+
+        let url = account_server().url.clone();
+        let info = p
+            .client
+            .login_dev(format!("{url}/"), "Login@Test.dev".into())
+            .unwrap();
+        assert_eq!(info.email, "login@test.dev");
+        assert_eq!(info.account_url, url);
+        assert!(p.client.is_signed_in());
+        // 보안 저장소에는 갱신 토큰이 있다(접속 토큰은 메모리에만)
+        let raw = String::from_utf8(p.vault.get(account::KEY.into()).unwrap()).unwrap();
+        assert!(raw.contains("refresh_token") && !raw.contains("access_token"));
+
+        p.client
+            .start("ws://127.0.0.1:1".into(), Arc::new(Recorder::default()))
+            .unwrap();
+        assert!(p.client.is_running());
+        // 세션을 열면 계정의 기기 목록에 이 기기가 올라간다 (플랫폼 android)
+        wait_until(
+            || {
+                me("login@test.dev")["devices"].as_array().is_some_and(|d| {
+                    d.iter()
+                        .any(|d| d["platform"] == "android" && d["name"] == "폰")
+                })
+            },
+            "기기가 계정에 등록되지 않았다",
+        );
+
+        // 같은 폴더·저장소로 다시 열면 로그인이 남아 있다
+        let again =
+            ClipFerryClient::open(p._dir.path().display().to_string(), p.vault.clone()).unwrap();
+        assert_eq!(again.account().unwrap().email, "login@test.dev");
+        drop(again);
+
+        p.client.logout();
+        assert!(!p.client.is_running());
+        assert!(!p.client.is_signed_in());
+        assert!(p.vault.get(account::KEY.into()).is_none());
+        assert!(p
+            .client
+            .start("ws://127.0.0.1:1".into(), Arc::new(Recorder::default()))
+            .is_err());
+        assert!(p.client.has_group(), "로그아웃해도 그룹은 남는다");
+    }
+
+    /// Android 앱이 구글 로그인 창에 넘길 웹 클라이언트 ID를 계정 서버에서 받는다.
+    #[test]
+    fn google_client_id_comes_from_account_server() {
+        let p = signed_out_phone("폰", false);
+        assert_eq!(
+            p.client
+                .google_client_id(account_server().url.clone())
+                .unwrap(),
+            "web.apps"
+        );
+        assert!(p
+            .client
+            .google_client_id("http://127.0.0.1:1".into())
+            .is_err());
+        // 가짜 ID 토큰은 계정 서버가 거절한다
+        let err = p
+            .client
+            .login_google(account_server().url.clone(), "not.a.token".into())
+            .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("구글 로그인을 확인하지 못했습니다"),
+            "{err}"
+        );
+        assert!(!p.client.is_signed_in());
+    }
+
+    /// 접속 토큰을 확인하는 릴레이(F33)에서: 로그인한 두 폰이 페어링하고 주고받는다.
+    #[test]
+    fn pairs_and_sends_through_token_checking_relay() {
+        let (_rt, _relay, url) = relay_with(true);
+        let pc = phone("PC", true);
+        let mobile = phone("폰", false);
+        pair(&pc, &mobile, &url);
+
+        let pc_events = Arc::new(Recorder::default());
+        let phone_events = Arc::new(Recorder::default());
+        pc.client.start(url.clone(), pc_events.clone()).unwrap();
+        mobile.client.start(url, phone_events.clone()).unwrap();
+        for c in [&pc.client, &mobile.client] {
+            wait_until(
+                || c.devices().iter().filter(|d| d.online).count() == 2,
+                "두 기기가 서로 온라인으로 보이지 않았다",
+            );
+        }
+        assert_eq!(
+            mobile.client.send_text("토큰 확인 릴레이".into()).unwrap(),
+            1
+        );
+        wait_until(
+            || !pc_events.texts.lock().unwrap().is_empty(),
+            "텍스트가 오지 않았다",
+        );
+        assert_eq!(*phone_events.auth_rejected.lock().unwrap(), 0);
+    }
+
+    /// 다른 곳에서 로그아웃되어 갱신 토큰이 거절되면: 로그인 정보를 지우고, 세션을 닫고, 셸에 알린다.
+    #[test]
+    fn rejected_refresh_signs_out_and_stops() {
+        let (_rt, _relay, url) = relay_with(true);
+        let p = phone("폰", true);
+        let saved = p.vault.get(account::KEY.into()).unwrap();
+        // 같은 로그인을 다른 곳에서 로그아웃한 것처럼: 서버에서 무효화하고 저장소는 되돌린다
+        p.client.logout();
+        p.vault.set(account::KEY.into(), saved).unwrap();
+        let stale =
+            ClipFerryClient::open(p._dir.path().display().to_string(), p.vault.clone()).unwrap();
+        assert!(stale.is_signed_in());
+
+        let events = Arc::new(Recorder::default());
+        stale.start(url, events.clone()).unwrap();
+        wait_until(
+            || !events.signed_out.lock().unwrap().is_empty(),
+            "로그아웃 알림이 오지 않았다",
+        );
+        assert!(events.signed_out.lock().unwrap()[0].contains("다시 로그인"));
+        wait_until(|| !stale.is_running(), "세션이 닫히지 않았다");
+        assert!(!stale.is_signed_in());
+        assert!(p.vault.get(account::KEY.into()).is_none());
+        assert!(stale.has_group(), "그룹은 남는다");
+    }
+
+    /// 계정 서버가 꺼져 있으면 로그아웃하지 않는다(나중에 다시 시도).
+    #[test]
+    fn account_server_down_is_not_sign_out() {
+        let p = phone("폰", true);
+        let mut raw: serde_json::Value =
+            serde_json::from_slice(&p.vault.get(account::KEY.into()).unwrap()).unwrap();
+        raw["account_url"] = "http://127.0.0.1:1".into();
+        p.vault
+            .set(account::KEY.into(), serde_json::to_vec(&raw).unwrap())
+            .unwrap();
+        let c =
+            ClipFerryClient::open(p._dir.path().display().to_string(), p.vault.clone()).unwrap();
+        let events = Arc::new(Recorder::default());
+        c.start("ws://127.0.0.1:1".into(), events.clone()).unwrap();
+        wait_until(
+            || {
+                events
+                    .statuses
+                    .lock()
+                    .unwrap()
+                    .contains(&LinkStatus::Reconnecting)
+            },
+            "재연결 상태 알림이 오지 않았다",
+        );
+        assert!(events.signed_out.lock().unwrap().is_empty());
+        assert!(c.is_signed_in() && c.is_running());
     }
 }

@@ -29,6 +29,10 @@ struct Args {
     /// 받아 줄 구글 OAuth 클라이언트 ID (쉼표로 여러 개: 웹·데스크톱·Android·iOS)
     #[arg(long, env = "CF_ACCOUNT_GOOGLE_CLIENT_IDS", value_delimiter = ',')]
     google_client_ids: Vec<String>,
+    /// Android 앱이 Credential Manager의 serverClientId로 쓸 "웹 애플리케이션" 클라이언트 ID (F35).
+    /// 주지 않으면 CF_ACCOUNT_GOOGLE_CLIENT_IDS의 첫 번째를 쓴다
+    #[arg(long, env = "CF_ACCOUNT_GOOGLE_WEB_CLIENT_ID")]
+    google_web_client_id: Option<String>,
     /// 데스크톱 앱용 구글 클라이언트 ID ("데스크톱 앱" 유형, F34). 주면 받아 줄 클라이언트 목록에도 더한다
     #[arg(long, env = "CF_ACCOUNT_GOOGLE_DESKTOP_CLIENT_ID")]
     google_desktop_client_id: Option<String>,
@@ -79,6 +83,21 @@ async fn main() -> anyhow::Result<()> {
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
         .collect();
+    // Android 앱의 serverClientId: 따로 주지 않으면 목록의 첫 번째(웹 클라이언트)
+    let android = args
+        .google_web_client_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .or_else(|| client_ids.first().cloned());
+    if let Some(id) = &android {
+        if !client_ids.contains(id) {
+            client_ids.push(id.clone());
+        }
+    } else {
+        tracing::warn!("no google web client; android login is disabled");
+    }
     let desktop = match (
         args.google_desktop_client_id.as_deref().map(str::trim).filter(|s| !s.is_empty()),
         args.google_desktop_client_secret.as_deref().map(str::trim).filter(|s| !s.is_empty()),
@@ -127,6 +146,7 @@ async fn main() -> anyhow::Result<()> {
             KeySource::Remote(RemoteKeys::new(GOOGLE_JWKS_URL)),
         ),
         google_desktop: desktop,
+        google_android: android,
         dev_login: args.dev_login,
         dev_pages: args.dev_pages,
         usage_secret: args.usage_secret.clone().filter(|s| !s.is_empty()),

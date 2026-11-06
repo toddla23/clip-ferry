@@ -102,9 +102,14 @@ docker compose -f deploy/compose.yml down                        # 중지
    - 승인된 JavaScript 원본: `https://<기기>.<tailnet>.ts.net:8443` (Pi), `http://localhost:8788` (PC에서 시험)
    - 리디렉션 URI는 비워 둔다
 4. 만들어진 **클라이언트 ID**(`…apps.googleusercontent.com`)를 적는다. 클라이언트 보안 비밀은 쓰지 않는다
-   - Android·iOS 클라이언트 ID는 F35·F36에서 더한다(`CF_GOOGLE_CLIENT_IDS`에 쉼표로)
+   - **`CF_GOOGLE_CLIENT_IDS`의 첫 번째는 이 웹 클라이언트로 둔다.** Android 앱이 구글 로그인 창에 이 ID를 넘기고(Credential Manager의 `serverClientId`), 받은 ID 토큰의 `aud`도 이 값이다(F35). 다른 값을 쓰려면 `CF_GOOGLE_WEB_CLIENT_ID`
+   - iOS 클라이언트 ID는 F36에서 더한다(`CF_GOOGLE_CLIENT_IDS`에 쉼표로)
 5. **데스크톱 앱용 클라이언트 (F34)**: 사용자 인증 정보 만들기 → OAuth 클라이언트 ID → 유형 **데스크톱 앱**(이름 예: `clip-ferry desktop`). 리디렉션 주소는 넣지 않는다(구글이 `http://127.0.0.1:<포트>`를 알아서 받는다)
    - 만들어진 **클라이언트 ID**와 **클라이언트 보안 비밀**을 `.env.account`의 `CF_GOOGLE_DESKTOP_CLIENT_ID`, `CF_GOOGLE_DESKTOP_CLIENT_SECRET`에 넣는다. 보안 비밀은 계정 서버만 갖고 앱·저장소에는 넣지 않는다(D-020). `CF_GOOGLE_CLIENT_IDS`에는 따로 넣지 않아도 된다(서버가 더한다)
+6. **Android 앱용 클라이언트 (F35)**: 사용자 인증 정보 만들기 → OAuth 클라이언트 ID → 유형 **Android**. 패키지 이름 `app.clipferry.android`, **SHA-1 인증서 지문**은 APK에 서명한 키의 것이다. 키마다 하나씩 만든다(디버그 키·배포 키)
+   - 디버그 키(Android Studio·`gradlew installDebug`로 설치한 앱): `apps/android`에서 `.\gradlew.bat signingReport` → `Variant: debug` 아래 `SHA1:` 줄. (`keytool -list -v`는 한국어 Windows에서 `IllegalFormatConversionException`으로 멈출 수 있다)
+   - 배포 키(GitHub Releases APK, D-018): 배포 키 환경 변수(`CLIPFERRY_KEYSTORE` 등, `docs/07-release.md`)를 둔 채 `signingReport`의 `Variant: release` 줄
+   - 이 클라이언트 ID는 **서버 설정에 넣지 않는다.** 앱 코드에도 없다. 구글이 "이 패키지·서명의 앱이 이 프로젝트 소속인지" 확인하는 데만 쓴다. 없거나 SHA-1이 틀리면 앱에서 `Developer console is not set up correctly` 오류가 난다
 
 ### 2. 설정 파일과 기동 (Pi)
 
@@ -166,6 +171,7 @@ docker compose --env-file deploy/.env.account -f deploy/compose.account.yml exec
 | `CF_ACCOUNT_MEMORY_STORE` | false | DB 없이 메모리 (개발 전용) |
 | `CF_ACCOUNT_SIGNING_KEY` | 없음(필수) | 접속 토큰 서명 키, base64url 32바이트 (`clip-ferry-account gen-key`로도 만든다) |
 | `CF_ACCOUNT_GOOGLE_CLIENT_IDS` | 없음 | 받아 줄 구글 클라이언트 ID, 쉼표로 여러 개 (compose는 `CF_GOOGLE_CLIENT_IDS`) |
+| `CF_ACCOUNT_GOOGLE_WEB_CLIENT_ID` | 위 목록의 첫 번째 | Android 앱이 구글 로그인 창에 넘길 "웹 애플리케이션" 클라이언트 ID (F35, compose는 `CF_GOOGLE_WEB_CLIENT_ID`). `GET /v1/auth/google/android`로 알려 준다. 받아 줄 목록에도 더한다 |
 | `CF_ACCOUNT_GOOGLE_DESKTOP_CLIENT_ID` | 없음 | 데스크톱 앱 구글 로그인용 "데스크톱 앱" 클라이언트 ID (F34, compose는 `CF_GOOGLE_DESKTOP_CLIENT_ID`). 비우면 데스크톱 로그인을 끈다 |
 | `CF_ACCOUNT_GOOGLE_DESKTOP_CLIENT_SECRET` | 없음 | 그 클라이언트의 보안 비밀. ID와 함께 줘야 한다 (compose는 `CF_GOOGLE_DESKTOP_CLIENT_SECRET`) |
 | `CF_ACCOUNT_DEV_PAGES` | false | `/dev/google` 시험 페이지 (compose는 `CF_DEV_PAGES`) |
@@ -176,7 +182,7 @@ docker compose --env-file deploy/.env.account -f deploy/compose.account.yml exec
 
 릴레이에 계정 서버 주소를 주면 **로그인한 기기(접속 토큰)만** 연결할 수 있다. 계정별 동시 연결 수·분당 바이트를 따로 세고, 계정별 게시 수·바이트(내용 없음)를 1분마다 계정 서버에 보낸다.
 
-> 데스크톱 앱은 F34부터 로그인해야 동작한다. Android 앱에는 아직 로그인이 없다(F35). 지금 Pi 릴레이에서 켜면 Android 앱의 동기화가 끊긴다. 그래서 **F35 뒤에 켠다.** 그전 시험은 PC에서 한다(`todo/F33-확인.md`, `todo/F34-확인.md`).
+> 데스크톱 앱은 F34부터, Android 앱은 F35부터 로그인해야 동작한다. 켜기 전에 **쓰는 모든 기기(PC·폰)를 로그인하는 버전으로 업데이트**한다. 예전 버전 앱은 토큰이 없어 연결이 끊긴다.
 
 켤 때 (Pi):
 

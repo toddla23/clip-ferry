@@ -1,11 +1,17 @@
 package app.clipferry.android
 
+import android.app.Activity
 import android.content.Context
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import java.io.File
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.withContext
+import uniffi.clip_ferry_ffi.AccountInfo
 import uniffi.clip_ferry_ffi.ClipFerryClient
 import uniffi.clip_ferry_ffi.CoreEvents
 import uniffi.clip_ferry_ffi.DeviceEntry
@@ -68,10 +74,21 @@ data class UiState(
     val syncSensitive: Boolean = true,
     /** 마지막으로 받은 것 (이 앱이 켜진 뒤). 내용은 담지 않는다. */
     val lastReceived: Received? = null,
+    /** 로그인한 계정 (F35). 없으면 로그인 화면만 보이고 연결하지 않는다. */
+    val account: AccountInfo? = null,
+    /** 로그인할 계정 서버 주소 (로그아웃 상태에서만 바꾼다). */
+    val accountUrl: String = "",
+    /** 구글 로그인 창이 떠 있거나 계정 서버를 기다리는 중. */
+    val loginBusy: Boolean = false,
+    /** 로그인 화면에 보여 줄 문장 (실패·만료). */
+    val loginMessage: String? = null,
+    /** 릴레이가 접속 토큰을 받지 않았다. 다시 연결되면 사라진다. */
+    val authRejected: Boolean = false,
 ) {
     /** 그룹이 있다(제거된 그룹 포함). 없으면 첫 실행 화면을 보여 준다. */
     val hasGroup: Boolean get() = status?.epoch != null
     val removed: Boolean get() = status?.health == Health.REMOVED
+    val signedIn: Boolean get() = account != null
 }
 
 /**
@@ -104,9 +121,11 @@ object CoreController : CoreEvents {
             serviceEnabled = settings.serviceEnabled,
             notifyOnReceive = settings.notifyOnReceive,
             syncSensitive = settings.syncSensitive,
+            accountUrl = settings.accountUrl,
         )
         try {
-            ensureOpen()
+            val c = ensureOpen()
+            mutableState.update { it.copy(account = c.account()) }
             refresh()
         } catch (e: FfiException) {
             fail(e.userMessage())
@@ -134,13 +153,16 @@ object CoreController : CoreEvents {
         if (!c.isInitialized()) c.initDevice(name.trim().ifEmpty { defaultDeviceName })
     }
 
-    /** 릴레이에 (다시) 연결한다. 이미 연결 중이면 닫고 새로 연다. 그룹이 없으면 연결하지 않는다. */
+    /**
+     * 릴레이에 (다시) 연결한다. 이미 연결 중이면 닫고 새로 연다.
+     * 로그인하지 않았거나 그룹이 없으면 연결하지 않는다.
+     */
     @Synchronized
     fun start() {
         try {
             val c = ensureOpen()
-            if (!c.hasGroup()) {
-                // 첫 실행(그룹 없음)이거나 제거된 기기다. 화면의 안내로 충분하다.
+            if (!c.isSignedIn() || !c.hasGroup()) {
+                // 로그인 전이거나, 첫 실행(그룹 없음)이거나 제거된 기기다. 화면의 안내로 충분하다.
                 c.stop()
                 mutableState.update { it.copy(link = Link.STOPPED, online = 0, error = null) }
                 refresh()
@@ -217,7 +239,7 @@ object CoreController : CoreEvents {
      */
     fun ensureRunning() {
         val s = mutableState.value
-        if (!s.hasGroup || s.removed) return
+        if (!s.signedIn || !s.hasGroup || s.removed) return
         if (client?.isRunning() == true) return
         startService()
     }
@@ -231,6 +253,7 @@ object CoreController : CoreEvents {
         while (true) {
             val s = mutableState.value
             when {
+                !s.signedIn -> return "먼저 clip-ferry 앱에서 로그인하세요"
                 !s.hasGroup -> return "먼저 그룹을 만들거나 참여하세요"
                 s.removed -> return "이 기기는 그룹에서 제거되었습니다. 다시 페어링하세요"
                 s.link == Link.CONNECTED -> return null
@@ -253,6 +276,85 @@ object CoreController : CoreEvents {
         mutableState.update {
             it.copy(lastReceived = Received(fromName, isImage, ok, System.currentTimeMillis()))
         }
+    }
+
+    // ------------------------------------------------------- 계정 (F35)
+
+    /** 계정 서버 주소를 저장한다. 로그아웃 상태에서만. 잘못되었으면 이유를, 괜찮으면 `null`. */
+    fun setAccountUrl(url: String): String? {
+        if (mutableState.value.signedIn) return "로그아웃한 뒤에 바꿀 수 있습니다"
+        val trimmed = url.trim().trimEnd('/')
+        if (!(trimmed.startsWith("http://") || trimmed.startsWith("https://"))) {
+            return "계정 서버 주소는 http:// 또는 https://로 시작해야 합니다"
+        }
+        settings.accountUrl = trimmed
+        mutableState.update { it.copy(accountUrl = trimmed) }
+        return null
+    }
+
+    /**
+     * 구글 로그인: 계정 서버에서 웹 클라이언트 ID를 받고 → 구글 계정 선택 창(Credential Manager) →
+     * ID 토큰을 계정 서버에 낸다. 메인 스레드의 코루틴에서 부른다(창은 [activity] 위에 뜬다).
+     */
+    suspend fun loginGoogle(activity: Activity) = login {
+        val url = settings.accountUrl
+        val c = ensureOpen()
+        val clientId = withContext(Dispatchers.IO) { c.googleClientId(url) }
+        val idToken = GoogleLogin.idToken(activity, clientId)
+        withContext(Dispatchers.IO) { c.loginGoogle(url, idToken) }
+    }
+
+    /** 개발용 로그인 (디버그 빌드, 계정 서버 `--dev-login`). */
+    suspend fun loginDev(email: String) = login {
+        val url = settings.accountUrl
+        val c = ensureOpen()
+        withContext(Dispatchers.IO) { c.loginDev(url, email) }
+    }
+
+    private suspend fun login(block: suspend () -> AccountInfo) {
+        if (mutableState.value.loginBusy) return
+        mutableState.update { it.copy(loginBusy = true, loginMessage = null) }
+        val result = try {
+            Result.success(block())
+        } catch (e: LoginFailed) {
+            Result.failure(e)
+        } catch (e: FfiException) {
+            Result.failure(LoginFailed(e.userMessage()))
+        } catch (e: UnsatisfiedLinkError) {
+            Result.failure(LoginFailed("코어 라이브러리를 불러오지 못했습니다"))
+        } finally {
+            // 화면 회전 등으로 코루틴이 취소되어도 버튼이 다시 보이게 한다.
+            mutableState.update { it.copy(loginBusy = false) }
+        }
+        result.onSuccess { info ->
+            mutableState.update {
+                it.copy(account = info, loginBusy = false, loginMessage = null, authRejected = false)
+            }
+            refresh()
+            // 기존 사용자(그룹이 있음)는 바로 이어서 연결한다. 없으면 첫 실행 화면으로 간다.
+            if (mutableState.value.hasGroup && mutableState.value.serviceEnabled) startService()
+        }.onFailure { e ->
+            mutableState.update { it.copy(loginBusy = false, loginMessage = e.message) }
+        }
+    }
+
+    /** 로그아웃: 연결을 멈추고 이 기기의 로그인 정보를 지운다. 그룹·페어링은 그대로다. */
+    suspend fun logout() {
+        ClipFerryService.stop(appContext)
+        val c = ensureOpen()
+        withContext(Dispatchers.IO) { c.logout() }
+        GoogleLogin.clear(appContext)
+        mutableState.update {
+            it.copy(
+                account = null,
+                link = Link.STOPPED,
+                online = 0,
+                pairing = null,
+                loginMessage = null,
+                authRejected = false,
+            )
+        }
+        refresh()
     }
 
     // ------------------------------------------------------- 첫 실행 · 그룹
@@ -428,7 +530,7 @@ object CoreController : CoreEvents {
     override fun onStatus(status: LinkStatus) {
         mutableState.update {
             when (status) {
-                LinkStatus.CONNECTED -> it.copy(link = Link.CONNECTED, error = null)
+                LinkStatus.CONNECTED -> it.copy(link = Link.CONNECTED, error = null, authRejected = false)
                 LinkStatus.DISCONNECTED, LinkStatus.RECONNECTING ->
                     it.copy(link = Link.RECONNECTING)
             }
@@ -451,6 +553,25 @@ object CoreController : CoreEvents {
 
     override fun onImage(fromName: String, mime: String, bytes: ByteArray) {
         ReceivedClips.onImage(fromName, mime, bytes)
+    }
+
+    override fun onAuthRejected() {
+        mutableState.update { it.copy(authRejected = true) }
+    }
+
+    /** 계정 서버가 로그인을 받지 않았다. 코어는 세션을 닫았다. 서비스도 멈추고 로그인 화면으로 간다. */
+    override fun onSignedOut(message: String) {
+        mutableState.update {
+            it.copy(
+                account = null,
+                link = Link.STOPPED,
+                online = 0,
+                pairing = null,
+                loginMessage = message,
+                authRejected = false,
+            )
+        }
+        Handler(Looper.getMainLooper()).post { ClipFerryService.stop(appContext) }
     }
 }
 

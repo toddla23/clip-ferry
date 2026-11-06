@@ -489,7 +489,8 @@ CLI 명령 예시는 `cf` = `cargo run -q -p clip-ferry-cli --` 의 줄임이다
 - **완료 조건**
   - [ ] 실기기에서 로그인 → 기존 기능(F15~F19) 회귀 없음
   - [ ] 로그인 전에는 서비스가 연결하지 않음
-- **사용자 확인 방법**: 구현 때 작성
+- 구현 메모(D-021): 셸은 Credential Manager(`GetSignInWithGoogleOption`)로 구글 ID 토큰만 받아 `ffi`에 넘긴다. 웹 클라이언트 ID는 앱에 넣지 않고 계정 서버가 알려 준다(`GET /v1/auth/google/android`). 계정 서버 `POST /v1/auth/google`은 그대로. 갱신·로그아웃·기기 등록·접속 토큰은 `ffi/src/account.rs`(데스크톱과 같은 규칙, 보안 저장소 항목 `account/session`). 설정에 계정 서버 주소(로그아웃 상태에서만 변경). 디버그 빌드에는 개발용 로그인 칸. 구글 콘솔에 "Android" 클라이언트(패키지 이름 + 서명 SHA-1)가 있어야 한다
+- **사용자 확인 방법**: `todo/F35-확인.md` (PC 계정 서버 + 토큰 확인 릴레이 + 실기기, 실제 구글 로그인)
 
 ## F36. iOS 로그인 (구글 + Apple)
 
