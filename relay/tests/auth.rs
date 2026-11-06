@@ -34,6 +34,7 @@ async fn account() -> Account {
         store: Store::memory(),
         signer: Signer::from_seed(&[9u8; 32]),
         google: GoogleVerifier::new(vec![], KeySource::Static(HashMap::new())),
+        google_desktop: None,
         dev_login: true,
         dev_pages: false,
         usage_secret: Some(SECRET.into()),

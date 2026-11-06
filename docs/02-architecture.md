@@ -111,7 +111,9 @@ pub trait SecretStore: Send + Sync {         // 셸이 구현 (플랫폼 보안 
 
 Android 빌드 메모: 필요한 것은 Android Studio(SDK 플랫폼·NDK·CMake), 환경 변수 `ANDROID_HOME`·`ANDROID_NDK_HOME`, `rustup target add aarch64-linux-android x86_64-linux-android`, `cargo install cargo-ndk --locked`. `scripts/build-android-core.ps1`(Windows) 또는 `.sh`(macOS·Linux)가 `.so`를 `apps/android/app/src/main/jniLibs/`에, Kotlin 바인딩을 `app/src/main/java/uniffi/`에 만든다(둘 다 git에 넣지 않는다). 그 뒤 Android Studio로 열거나 `apps/android`에서 `./gradlew installDebug`. 처음 받은 저장소는 코어 스크립트를 먼저 한 번 돌려야 Gradle 빌드가 된다. Android 셸의 파일은 `KeystoreVault`(Keystore 비밀 저장소), `CoreController`(코어 ↔ 화면 상태), `ClipFerryService`(포그라운드 서비스·네트워크 변경 감지), `MainActivity`(Compose 화면: 첫 실행·메인), `PairingScreens`(참여·초대·확인 숫자·기기 목록), `QrScanner`(CameraX + ML Kit 번들 모델, 기기 안에서만 인식), `ReceivedClips`(받은 텍스트·이미지를 클립보드에 쓰기. 이미지는 `cache/received/`에 최근 1개만 두고 `FileProvider` URI로 넘긴다), `SendActivity`·`SendTileService`·`SendClipboard`(타일·알림 버튼 → 보이지 않는 액티비티가 초점을 받아 클립보드를 읽고 보낸다), `ShareActivity`(공유 시트·텍스트 선택 메뉴 → 보이지 않는 액티비티. 공유받은 이미지는 `cache/outgoing/`에 복사한 뒤 `SendClipboard.sendBatch`로 한 장씩 보낸다), `ShareShortcut`(공유 시트 맨 윗줄 직접 공유 바로가기 `다른 기기로`).
 
-데스크톱 빌드 메모: Tauri 매크로가 컴파일 때 `apps/desktop/dist`(UI 빌드 결과)를 읽는다. 새로 받은 저장소에서는 `cd apps/desktop && npm ci && npm run build`를 먼저 한 번 해야 `cargo build/test --workspace`가 된다(CI도 같은 순서). `src-tauri`는 `shell`(코어 연결), `tray`, `secrets`(keyring), `settings`, `view`(UI용 요약)로 나뉜다.
+데스크톱 빌드 메모: Tauri 매크로가 컴파일 때 `apps/desktop/dist`(UI 빌드 결과)를 읽는다. 새로 받은 저장소에서는 `cd apps/desktop && npm ci && npm run build`를 먼저 한 번 해야 `cargo build/test --workspace`가 된다(CI도 같은 순서). `src-tauri`는 `shell`(코어 연결), `account`(구글 로그인·접속 토큰, F34), `tray`, `secrets`(keyring), `settings`, `view`(UI용 요약)로 나뉜다.
+
+데스크톱 로그인(F34, D-020): 로그인하지 않으면 릴레이에 연결하지 않는다(로그인 화면만). `Google로 로그인` → 시스템 브라우저 + 루프백 `http://127.0.0.1:<임의 포트>/` + PKCE → 인가 코드를 계정 서버에 넘김 → 접속·갱신 토큰. 모든 릴레이 연결(세션·페어링)이 `TransportConfig.token`으로 접속 토큰을 싣고, 만료 2분 전에 갱신한다(한 번에 하나씩). 갱신이 거절되면 로그인 화면으로 돌아간다. 로그아웃해도 그룹·페어링은 남는다.
 
 셸에 비즈니스 로직을 넣지 않는다. "무엇을 보낼지·받은 걸 어디에 쓸지"만 결정한다.
 
@@ -181,6 +183,7 @@ clip-ferry/
 - **상태**(로스터, 설정, 에포크 번호): 앱 데이터 폴더의 `state.bin`. 로컬 저장 키로 XChaCha20-Poly1305 암호화.
   - 형식: `"CFST"`(4) ‖ 형식 버전(1) ‖ nonce(24) ‖ 암호문. 머리말(`"CFST"`‖버전)이 aad. 평문은 `LocalState` protobuf.
   - 비밀 저장소 키 이름: `device_keys`(서명 시드‖DH 비밀, 64B), `state_key`(32B), `group_key/<에포크>`(32B).
+  - 데스크톱 계정 로그인(F34): `account/session` — 계정 서버 주소·갱신 토큰·이메일·이름(JSON). 접속 토큰은 저장하지 않는다(메모리).
   - 비밀 저장소와 `state.bin`이 한쪽만 남아 있으면 열기를 거부한다(조용히 새로 만들지 않는다).
 - **클립보드 내용은 디스크에 저장하지 않는다** (로컬 내역 기능 F29 전까지).
 

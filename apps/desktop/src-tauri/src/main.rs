@@ -1,6 +1,7 @@
 // 릴리스 빌드에서 Windows 콘솔 창이 뜨지 않게 한다.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod account;
 mod clipsync;
 mod imgcodec;
 mod secrets;
@@ -82,6 +83,39 @@ fn set_paused(shell: State<'_, Arc<Shell>>, paused: bool) -> AppView {
 }
 
 #[tauri::command]
+fn start_google_login(shell: State<'_, Arc<Shell>>) -> AppView {
+    shell.start_google_login()
+}
+
+#[tauri::command]
+fn cancel_login(shell: State<'_, Arc<Shell>>) -> AppView {
+    shell.cancel_login()
+}
+
+#[tauri::command]
+async fn dev_login(shell: State<'_, Arc<Shell>>, email: String) -> Result<AppView, String> {
+    #[cfg(debug_assertions)]
+    {
+        shell.dev_login(&email).await
+    }
+    #[cfg(not(debug_assertions))]
+    {
+        let _ = (shell, email);
+        Err("개발용 로그인은 개발 빌드에서만 됩니다".into())
+    }
+}
+
+#[tauri::command]
+async fn logout(shell: State<'_, Arc<Shell>>) -> Result<AppView, String> {
+    Ok(shell.logout().await)
+}
+
+#[tauri::command]
+fn set_account_url(shell: State<'_, Arc<Shell>>, url: String) -> Result<AppView, String> {
+    shell.set_account_url(&url)
+}
+
+#[tauri::command]
 fn set_autostart(shell: State<'_, Arc<Shell>>, on: bool) -> Result<AppView, String> {
     shell.set_autostart(on)
 }
@@ -106,7 +140,12 @@ fn main() {
             leave_group,
             set_sync,
             set_paused,
-            set_autostart
+            set_autostart,
+            start_google_login,
+            cancel_login,
+            dev_login,
+            logout,
+            set_account_url
         ])
         .on_window_event(|window, event| {
             // 창을 닫아도 트레이에 남는다. 종료는 트레이 메뉴에서.
@@ -122,12 +161,15 @@ fn main() {
             // 개발용: 환경 변수 CF_DESKTOP_PROFILE=<이름>이면 데이터 폴더와 키 저장소 이름을
             // 따로 쓴다. 한 컴퓨터에서 앱을 두 개 띄워 페어링을 시험할 때 쓴다.
             let mut data_dir = app.path().app_data_dir()?;
-            let mut keys = secrets::KeyringStore::new();
+            let mut service = "clip-ferry".to_string();
             if let Some(profile) = settings::dev_profile() {
                 data_dir = data_dir.join("profiles").join(&profile);
-                keys = secrets::KeyringStore::with_service(&format!("clip-ferry-{profile}"));
+                service = format!("clip-ferry-{profile}");
             }
-            let shell = Shell::new(handle, data_dir, Box::new(keys))?;
+            let keys = secrets::KeyringStore::with_service(&service);
+            // 계정 로그인 정보(갱신 토큰)도 같은 보안 저장소에 다른 이름으로 둔다.
+            let account_keys = secrets::KeyringStore::with_service(&service);
+            let shell = Shell::new(handle, data_dir, Box::new(keys), Box::new(account_keys))?;
             app.manage(shell.clone());
 
             tauri::async_runtime::spawn(async move {

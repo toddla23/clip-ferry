@@ -172,6 +172,21 @@ pub struct AppView {
     pub autostart: bool,
     /// 마법사에서 이름 칸에 미리 넣어 줄 값.
     pub default_name: String,
+    /// 로그인한 계정 (F34). 없으면 로그인 화면을 띄우고 릴레이에 연결하지 않는다.
+    pub account: Option<AccountView>,
+    pub account_url: String,
+    /// 브라우저에서 구글 로그인을 마치기를 기다리는 중
+    pub login_busy: bool,
+    /// 로그인 실패·만료 안내
+    pub login_message: Option<String>,
+    /// 개발용 로그인(이메일만) 칸을 보인다 (디버그 빌드)
+    pub dev_login: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct AccountView {
+    pub email: String,
+    pub name: String,
 }
 
 pub fn short_id(id: &[u8; 16]) -> String {
@@ -304,7 +319,17 @@ mod tests {
         assert_eq!(json["pairing"]["phase"], "request");
         assert!(json["devices"][0].get("isSelf").is_some());
         assert_eq!(json["devices"][0]["online"], false);
-        for key in ["sendEnabled", "receiveEnabled", "paused", "autostart"] {
+        for key in [
+            "sendEnabled",
+            "receiveEnabled",
+            "paused",
+            "autostart",
+            "account",
+            "accountUrl",
+            "loginBusy",
+            "loginMessage",
+            "devLogin",
+        ] {
             assert!(json.get(key).is_some(), "{key}");
         }
         assert!(json.get("deviceName").is_some() && json.get("relayUrl").is_some());

@@ -12,10 +12,11 @@ use clip_ferry_core::pair_flow::{self, InviteFlow, InviteUpdate, JoinFlow, JoinU
 use clip_ferry_core::session::{ConnectionStatus, EventSink, Session};
 use clip_ferry_core::store::SecretStore;
 use clip_ferry_core::transfer::MAX_IMAGE_BYTES;
-use clip_ferry_core::transport::TransportConfig;
+use clip_ferry_core::transport::{TokenSource, TransportConfig};
 use tauri::{AppHandle, Emitter};
 use tauri_plugin_autostart::ManagerExt;
 
+use crate::account::{self, Account, TokenError};
 use crate::clipsync::{ClipSync, Content};
 use crate::imgcodec;
 use crate::settings::{self, Settings};
@@ -39,6 +40,13 @@ struct Pairing {
 
 struct Inner {
     relay_url: String,
+    account_url: String,
+    /// 릴레이가 접속 토큰을 거절했다 (다시 연결되면 지운다)
+    auth_rejected: bool,
+    /// 브라우저 로그인을 기다리는 중
+    login_task: Option<tauri::async_runtime::JoinHandle<()>>,
+    /// 로그인 화면에 보여 줄 안내 (실패·만료)
+    login_message: Option<String>,
     send_enabled: bool,
     receive_enabled: bool,
     /// 트레이의 일시정지. 저장하지 않는다(앱을 다시 켜면 풀린다).
@@ -55,6 +63,7 @@ struct Inner {
 
 pub struct Shell {
     app: Arc<ClipFerry>,
+    account: Arc<Account>,
     clip: Arc<ClipSync<SystemClipboard>>,
     sync_sensitive: bool,
     handle: AppHandle,
@@ -108,7 +117,22 @@ impl EventSink for Sink {
 
     fn on_status(&self, status: ConnectionStatus) {
         if let Some(shell) = self.0.upgrade() {
-            shell.inner.lock().unwrap().connection = status.into();
+            {
+                let mut inner = shell.inner.lock().unwrap();
+                inner.connection = status.into();
+                if status == ConnectionStatus::Connected {
+                    inner.auth_rejected = false;
+                }
+            }
+            shell.publish();
+        }
+    }
+
+    fn on_auth_required(&self) {
+        // 접속 토큰을 거절당했다. 다음 재연결 때 새 토큰을 받는다(갱신이 거절되면 로그아웃 상태가 된다).
+        if let Some(shell) = self.0.upgrade() {
+            shell.account.invalidate_access();
+            shell.inner.lock().unwrap().auth_rejected = true;
             shell.publish();
         }
     }
@@ -147,6 +171,7 @@ impl Shell {
         handle: AppHandle,
         data_dir: PathBuf,
         secrets: Box<dyn SecretStore>,
+        account_secrets: Box<dyn SecretStore>,
     ) -> Result<Arc<Self>, Error> {
         std::fs::create_dir_all(&data_dir).map_err(|_| Error::Io)?;
         let app = Arc::new(ClipFerry::open(
@@ -157,6 +182,7 @@ impl Shell {
         )?);
         let Settings {
             relay_url,
+            account_url,
             sync_sensitive,
             send_enabled,
             receive_enabled,
@@ -164,6 +190,7 @@ impl Shell {
         let autostart = handle.autolaunch().is_enabled().unwrap_or(false);
         Ok(Arc::new(Self {
             app,
+            account: Arc::new(Account::new(account_secrets)),
             clip: ClipSync::new(SystemClipboard::new()),
             sync_sensitive,
             handle,
@@ -171,6 +198,10 @@ impl Shell {
             seq: AtomicU64::new(1),
             inner: Mutex::new(Inner {
                 relay_url,
+                account_url,
+                auth_rejected: false,
+                login_task: None,
+                login_message: None,
                 send_enabled,
                 receive_enabled,
                 paused: false,
@@ -185,10 +216,15 @@ impl Shell {
         }))
     }
 
-    /// 앱이 켜질 때 한 번. 그룹이 있으면 릴레이에 연결하고, 없으면 첫 실행 마법사를 띄운다.
-    /// tokio 런타임 안에서 불러야 한다.
+    /// 앱이 켜질 때 한 번. 로그인하지 않았으면 로그인 화면, 그룹이 있으면 릴레이에 연결하고,
+    /// 없으면 첫 실행 마법사를 띄운다. tokio 런타임 안에서 불러야 한다.
     pub fn begin(self: &Arc<Self>) {
         self.watch_clipboard();
+        if !self.account.is_signed_in() {
+            self.publish();
+            return;
+        }
+        self.register_device();
         match self.app.status() {
             Ok(s) if s.epoch.is_some() => self.start(),
             _ => self.publish(),
@@ -280,16 +316,58 @@ impl Shell {
             .show();
     }
 
-    /// 릴레이 세션을 (다시) 시작한다. tokio 런타임 안에서 불러야 한다.
+    /// 릴레이 연결 설정: 연결할 때마다 계정의 접속 토큰을 싣는다(만료가 가까우면 갱신).
+    fn transport_config(self: &Arc<Self>) -> TransportConfig {
+        let weak = Arc::downgrade(self);
+        TransportConfig {
+            token: Some(TokenSource::new(move || {
+                let weak = weak.clone();
+                async move {
+                    let shell = weak.upgrade()?;
+                    match shell.account.token().await {
+                        Ok(token) => Some(token),
+                        Err(TokenError::SignedOut) => {
+                            // 세션을 멈추는 일은 이 연결 작업 밖에서 한다.
+                            tauri::async_runtime::spawn(async move {
+                                shell.signed_out(Some(
+                                    "로그인이 만료되었습니다. 다시 로그인하세요".into(),
+                                ));
+                            });
+                            None
+                        }
+                        // 계정 서버에 닿지 않으면 토큰 없이 시도하고, 다음 재연결 때 다시 받는다.
+                        Err(TokenError::Unavailable) => None,
+                    }
+                }
+            })),
+            ..TransportConfig::default()
+        }
+    }
+
+    fn require_sign_in(&self) -> Result<(), String> {
+        if self.account.is_signed_in() {
+            Ok(())
+        } else {
+            Err("먼저 로그인하세요".into())
+        }
+    }
+
+    /// 릴레이 세션을 (다시) 시작한다. 로그인하지 않았으면 연결하지 않는다.
+    /// tokio 런타임 안에서 불러야 한다.
     pub fn start(self: &Arc<Self>) {
+        let config = self.transport_config();
         {
             let mut inner = self.inner.lock().unwrap();
             inner.session = None;
+            inner.auth_rejected = false;
+            if !self.account.is_signed_in() {
+                inner.connection = Connection::Stopped;
+                drop(inner);
+                self.publish();
+                return;
+            }
             let sink = Arc::new(Sink(Arc::downgrade(self)));
-            match self
-                .app
-                .start_session(&inner.relay_url, TransportConfig::default(), sink)
-            {
+            match self.app.start_session(&inner.relay_url, config, sink) {
                 Ok(session) => {
                     inner.session = Some(Arc::new(session));
                     inner.connection = Connection::Reconnecting;
@@ -314,6 +392,7 @@ impl Shell {
         let inner = self.inner.lock().unwrap();
         let mut s = Settings {
             relay_url: inner.relay_url.clone(),
+            account_url: inner.account_url.clone(),
             sync_sensitive: self.sync_sensitive,
             send_enabled: inner.send_enabled,
             receive_enabled: inner.receive_enabled,
@@ -376,6 +455,124 @@ impl Shell {
         Ok(self.view())
     }
 
+    // ------------------------------------------------------------ 계정 (F34)
+
+    /// 로그인 전에만 바꿀 수 있다(로그인 정보는 그 계정 서버의 것이다).
+    pub fn set_account_url(&self, input: &str) -> Result<AppView, String> {
+        if self.account.is_signed_in() {
+            return Err("로그아웃한 뒤에 바꿀 수 있습니다".into());
+        }
+        let url = settings::validate_account_url(input)?;
+        self.save_settings(|s| s.account_url = url.clone())?;
+        self.inner.lock().unwrap().account_url = url;
+        self.publish();
+        Ok(self.view())
+    }
+
+    /// 구글 로그인을 시작한다: 시스템 브라우저를 열고, 돌아오면 로그인을 마친다.
+    pub fn start_google_login(self: &Arc<Self>) -> AppView {
+        let url = {
+            let mut inner = self.inner.lock().unwrap();
+            if inner.login_task.is_some() || self.account.is_signed_in() {
+                drop(inner);
+                return self.view();
+            }
+            inner.login_message = None;
+            inner.account_url.clone()
+        };
+        let weak = Arc::downgrade(self);
+        let account = self.account.clone();
+        let task = tauri::async_runtime::spawn(async move {
+            let result = account.google_login(&url, account::open_browser).await;
+            if let Some(shell) = weak.upgrade() {
+                shell.login_finished(result);
+            }
+        });
+        self.inner.lock().unwrap().login_task = Some(task);
+        self.publish();
+        self.view()
+    }
+
+    /// 개발용 로그인 (디버그 빌드, 계정 서버 `--dev-login`).
+    #[cfg(debug_assertions)]
+    pub async fn dev_login(self: &Arc<Self>, email: &str) -> Result<AppView, String> {
+        let url = self.inner.lock().unwrap().account_url.clone();
+        let result = self.account.dev_login(&url, email).await;
+        let failed = result.as_ref().err().cloned();
+        self.login_finished(result);
+        match failed {
+            Some(e) => Err(e),
+            None => Ok(self.view()),
+        }
+    }
+
+    /// 브라우저 로그인을 더 기다리지 않는다.
+    pub fn cancel_login(&self) -> AppView {
+        if let Some(task) = self.inner.lock().unwrap().login_task.take() {
+            task.abort();
+        }
+        self.publish();
+        self.view()
+    }
+
+    fn login_finished(self: &Arc<Self>, result: Result<account::Profile, String>) {
+        {
+            let mut inner = self.inner.lock().unwrap();
+            inner.login_task = None;
+            inner.login_message = result.as_ref().err().cloned();
+        }
+        if result.is_ok() {
+            self.register_device();
+            // 그룹이 있으면(기존 사용자) 바로 연결하고, 없으면 마법사로 간다.
+            if self.app.connection().is_some() {
+                self.start();
+                return;
+            }
+        }
+        self.publish();
+    }
+
+    /// 로그아웃: 연결과 페어링을 멈추고 이 기기의 로그인 정보를 지운다. 그룹·페어링은 그대로 둔다.
+    pub async fn logout(self: &Arc<Self>) -> AppView {
+        self.account.logout().await;
+        self.signed_out(None);
+        self.view()
+    }
+
+    /// 로그인하지 않은 상태로 돌아간다. 그룹은 그대로이고 다시 로그인하면 이어서 쓴다.
+    fn signed_out(&self, message: Option<String>) {
+        let (session, pairing) = {
+            let mut inner = self.inner.lock().unwrap();
+            inner.online.clear();
+            inner.connection = Connection::Stopped;
+            inner.auth_rejected = false;
+            inner.login_message = message;
+            (inner.session.take(), inner.pairing.take())
+        };
+        // 잠금을 놓은 뒤에 멈춘다.
+        drop(session);
+        drop(pairing);
+        self.publish();
+    }
+
+    /// 이 기기를 계정의 기기 목록에 올린다(이름·플랫폼). 실패해도 동작에는 상관없다.
+    fn register_device(&self) {
+        let Ok(status) = self.app.status() else {
+            return;
+        };
+        let id: String = status
+            .device_id
+            .0
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        let name = status.device_name;
+        let account = self.account.clone();
+        tauri::async_runtime::spawn(async move {
+            let _ = account.register_device(&id, &name).await;
+        });
+    }
+
     // ------------------------------------------------------------ 기기 관리
 
     fn session(&self) -> Result<Arc<Session>, String> {
@@ -397,6 +594,7 @@ impl Shell {
             .rename(name)
             .await
             .map_err(|e| e.to_string())?;
+        self.register_device();
         self.publish();
         Ok(self.view())
     }
@@ -432,12 +630,14 @@ impl Shell {
 
     // ------------------------------------------------------------ 첫 실행
 
-    /// 기기가 아직 없으면 이름을 정해 만든다. 이미 있으면 그대로 둔다.
+    /// 기기가 아직 없으면 이름을 정해 만든다. 이미 있으면 그대로 둔다. 로그인해야 한다.
     fn ensure_device(&self, name: &str) -> Result<(), String> {
+        self.require_sign_in()?;
         if !self.app.is_initialized() {
             self.app
                 .init_device(name.trim())
                 .map_err(|e| e.to_string())?;
+            self.register_device();
         }
         Ok(())
     }
@@ -498,7 +698,7 @@ impl Shell {
             code,
             None,
             &relay,
-            TransportConfig::default(),
+            self.transport_config(),
             move |update| {
                 if let Some(shell) = weak.upgrade() {
                     shell.on_join_update(id, update);
@@ -557,23 +757,20 @@ impl Shell {
 
     /// 다른 기기를 내 그룹에 초대한다.
     pub fn start_invite(self: &Arc<Self>) -> Result<AppView, String> {
+        self.require_sign_in()?;
         if self.app.connection().is_none() {
             return Err("먼저 그룹이 있어야 합니다".into());
         }
         let id = self.new_pairing_id();
         let relay = self.inner.lock().unwrap().relay_url.clone();
         let weak = Arc::downgrade(self);
-        let flow = pair_flow::start_invite(
-            &self.app,
-            &relay,
-            TransportConfig::default(),
-            move |update| {
+        let flow =
+            pair_flow::start_invite(&self.app, &relay, self.transport_config(), move |update| {
                 if let Some(shell) = weak.upgrade() {
                     shell.on_invite_update(id, update);
                 }
-            },
-        )
-        .map_err(|e| e.to_string())?;
+            })
+            .map_err(|e| e.to_string())?;
 
         let mut pv = PairingView::new(PairKind::Invite, PairPhase::Waiting);
         pv.text_code = Some(flow.text_code.clone());
@@ -652,12 +849,18 @@ impl Shell {
     // ------------------------------------------------------------ 화면
 
     pub fn view(&self) -> AppView {
-        let (connection, relay_url, error, pairing, online, flags) = {
+        let (connection, relay_url, error, pairing, online, flags, login) = {
             let inner = self.inner.lock().unwrap();
+            let error = inner.error.clone().or_else(|| {
+                inner.auth_rejected.then(|| {
+                    "릴레이가 로그인(접속 토큰)을 받지 않았습니다. 다시 연결하는 중입니다"
+                        .to_string()
+                })
+            });
             (
                 inner.connection,
                 inner.relay_url.clone(),
-                inner.error.clone(),
+                error,
                 inner.pairing.as_ref().map(|p| p.view.clone()),
                 inner.online.clone(),
                 (
@@ -665,6 +868,11 @@ impl Shell {
                     inner.receive_enabled,
                     inner.paused,
                     inner.autostart,
+                ),
+                (
+                    inner.account_url.clone(),
+                    inner.login_task.is_some(),
+                    inner.login_message.clone(),
                 ),
             )
         };
@@ -680,6 +888,16 @@ impl Shell {
             d.online = online.contains(&d.id) || (d.is_self && connection == Connection::Connected);
         }
         view.default_name = default_device_name();
+        view.account = self.account.profile().map(|p| view::AccountView {
+            email: p.email,
+            name: p.name,
+        });
+        (view.account_url, view.login_busy, view.login_message) = login;
+        view.dev_login = cfg!(debug_assertions);
+        if view.account.is_none() {
+            // 로그인 전에는 연결하지 않는다.
+            view.connection = Connection::Stopped;
+        }
         view.seq = self.seq.fetch_add(1, Ordering::SeqCst);
         view
     }

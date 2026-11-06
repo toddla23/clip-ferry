@@ -57,6 +57,19 @@ export default function Home({
       </section>
 
       <section>
+        <h2>계정</h2>
+        <div className="row between">
+          <span data-testid="account-email">
+            {view.account?.name ? `${view.account.name} · ` : ""}
+            {view.account?.email}
+          </span>
+          <button className="secondary" data-testid="logout" onClick={() => call("logout")}>
+            로그아웃
+          </button>
+        </div>
+      </section>
+
+      <section>
         <h2>설정</h2>
         <label className="check">
           <input

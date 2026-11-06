@@ -4,7 +4,9 @@ use std::time::Duration;
 use anyhow::Context;
 use clap::{Parser, Subcommand};
 use clip_ferry_account::api::{router, AppState};
-use clip_ferry_account::google::{GoogleVerifier, KeySource, RemoteKeys, GOOGLE_JWKS_URL};
+use clip_ferry_account::google::{
+    CodeExchange, GoogleVerifier, KeySource, RemoteKeys, GOOGLE_JWKS_URL, GOOGLE_TOKEN_URL,
+};
 use clip_ferry_account::store::Store;
 use clip_ferry_account::tokens::Signer;
 use tokio::net::TcpListener;
@@ -27,6 +29,16 @@ struct Args {
     /// 받아 줄 구글 OAuth 클라이언트 ID (쉼표로 여러 개: 웹·데스크톱·Android·iOS)
     #[arg(long, env = "CF_ACCOUNT_GOOGLE_CLIENT_IDS", value_delimiter = ',')]
     google_client_ids: Vec<String>,
+    /// 데스크톱 앱용 구글 클라이언트 ID ("데스크톱 앱" 유형, F34). 주면 받아 줄 클라이언트 목록에도 더한다
+    #[arg(long, env = "CF_ACCOUNT_GOOGLE_DESKTOP_CLIENT_ID")]
+    google_desktop_client_id: Option<String>,
+    /// 데스크톱 클라이언트의 보안 비밀 (구글이 코드 교환 때 요구한다. 앱에 넣지 않고 이 서버만 갖는다, D-020)
+    #[arg(
+        long,
+        env = "CF_ACCOUNT_GOOGLE_DESKTOP_CLIENT_SECRET",
+        hide_env_values = true
+    )]
+    google_desktop_client_secret: Option<String>,
     /// 접속 토큰 서명 키 (base64url 32바이트, `gen-key`로 만든다)
     #[arg(long, env = "CF_ACCOUNT_SIGNING_KEY", hide_env_values = true)]
     signing_key: Option<String>,
@@ -61,12 +73,30 @@ async fn main() -> anyhow::Result<()> {
         Signer::from_base64(args.signing_key.as_deref().context(
             "CF_ACCOUNT_SIGNING_KEY가 없습니다 (`clip-ferry-account gen-key`로 만든다)",
         )?)?;
-    let client_ids: Vec<String> = args
+    let mut client_ids: Vec<String> = args
         .google_client_ids
         .iter()
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
         .collect();
+    let desktop = match (
+        args.google_desktop_client_id.as_deref().map(str::trim).filter(|s| !s.is_empty()),
+        args.google_desktop_client_secret.as_deref().map(str::trim).filter(|s| !s.is_empty()),
+    ) {
+        (Some(id), Some(secret)) => {
+            if !client_ids.iter().any(|c| c == id) {
+                client_ids.push(id.to_string());
+            }
+            Some(CodeExchange::new(GOOGLE_TOKEN_URL, id, secret))
+        }
+        (None, None) => None,
+        _ => anyhow::bail!(
+            "데스크톱 구글 로그인에는 CF_ACCOUNT_GOOGLE_DESKTOP_CLIENT_ID와 _SECRET이 둘 다 필요합니다"
+        ),
+    };
+    if desktop.is_none() {
+        tracing::warn!("no google desktop client; desktop login is disabled");
+    }
     if client_ids.is_empty() {
         tracing::warn!("no google client ids configured; google login is disabled");
     }
@@ -96,6 +126,7 @@ async fn main() -> anyhow::Result<()> {
             client_ids,
             KeySource::Remote(RemoteKeys::new(GOOGLE_JWKS_URL)),
         ),
+        google_desktop: desktop,
         dev_login: args.dev_login,
         dev_pages: args.dev_pages,
         usage_secret: args.usage_secret.clone().filter(|s| !s.is_empty()),

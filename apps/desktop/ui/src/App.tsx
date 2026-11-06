@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import Home from "./Home";
+import Login from "./Login";
 import { InviteScreen, JoinScreen } from "./Pairing";
 import Repair from "./Repair";
 import Wizard from "./Wizard";
@@ -35,6 +36,8 @@ export default function App() {
 
   if (!view) return <main />;
 
+  // 로그인 전에는 다른 화면을 보이지 않는다(릴레이에도 연결하지 않는다).
+  if (!view.account) return <Login view={view} onView={apply} />;
   const p = view.pairing;
   if (p?.kind === "join") return <JoinScreen p={p} />;
   if (view.stage === "setup") return <Wizard view={view} />;
