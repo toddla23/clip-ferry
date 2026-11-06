@@ -104,9 +104,19 @@ jobs:
       - name: cargo-ndk
         run: cargo install cargo-ndk --locked
       - name: 코어(.so)와 Kotlin 바인딩
-        env:
-          ANDROID_NDK_HOME: ${{ env.ANDROID_NDK_LATEST_HOME }}
         run: |
+          # 러너 이미지의 NDK 경로는 ${{ env.* }}로 읽히지 않으므로 쉘에서 고른다.
+          # ANDROID_NDK_LATEST_HOME → ANDROID_NDK_HOME → $ANDROID_HOME/ndk 아래 최신 순.
+          ndk="${ANDROID_NDK_LATEST_HOME:-${ANDROID_NDK_HOME:-}}"
+          if [ -z "$ndk" ] && [ -d "${ANDROID_HOME:-}/ndk" ]; then
+            ndk=$(ls -d "$ANDROID_HOME"/ndk/*/ | sort -V | tail -1)
+          fi
+          if [ -z "$ndk" ]; then
+            echo "::error::러너에서 Android NDK를 찾지 못했습니다"
+            exit 1
+          fi
+          export ANDROID_NDK_HOME="${ndk%/}"
+          echo "NDK: $ANDROID_NDK_HOME"
           set +e
           ./scripts/build-android-core.sh > core.log 2>&1
           status=$?
