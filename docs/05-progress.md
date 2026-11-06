@@ -61,6 +61,7 @@
 
 새 항목을 위에 추가한다. 형식: `YYYY-MM-DD F00 — 한 줄`
 
+- 2026-11-06 F32 — PC(메모리 저장소)에서 실제 구글 계정으로 시험 페이지 확인 통과(로그인·내 계정·기기 등록·갱신 2번·로그아웃·테스트 사용자 외 차단). 시험 페이지 상대 경로 404 수정. 남은 것: CI `account (MariaDB)`, (선택) Pi 배포
 - 2026-11-06 F32 — `account/`(axum + MariaDB `sqlx`, 메모리 저장소 겸용): 구글 ID 토큰 검증(JWKS 캐시·`aud`·`iss`·만료·이메일 확인), 계정 upsert, 접속 토큰(EdDSA JWT 1시간, `GET /v1/keys`), 갱신 토큰(해시만 저장·교체·재사용 시 계정 전체 무효화), `/v1/me`·기기 등록, 개발용 로그인·시험 페이지, 마이그레이션 `0001_init.sql`, `deploy/compose.account.yml`·`Dockerfile.account`, CI `account (MariaDB)`. 테스트 18개 통과. 진행중
 - 2026-11-06 M7 — Apple 로그인 다시 포함(App Store 지침 4.8, 사용자 결정). iOS는 F36, 데스크톱·Android는 도메인 뒤 F41
 - 2026-11-06 M7 — 사용자 결정 D-019(구글 로그인 필수, 계정 서버에 계정·기기·사용량 저장, 클립보드 내용 암호화 유지, iOS는 Apple 로그인 포함). F32~F40 명세(04-features), 원칙 3·7 수정(01-overview). 개발·시험은 Pi, 도메인·클라우드는 F40 전
