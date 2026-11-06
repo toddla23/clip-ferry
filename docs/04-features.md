@@ -434,7 +434,7 @@ CLI 명령 예시는 `cf` = `cargo run -q -p clip-ferry-cli --` 의 줄임이다
 - **선행**: F14b (Pi 배포 환경)
 - **범위**
   - `account/`(크레이트 `clip-ferry-account`, axum + MariaDB, `sqlx` 마이그레이션)
-  - 표: `users`(id, 구글 `sub`, 이메일, 이름, 사진 URL, 가입·마지막 로그인 시각), `devices`(계정, `device_id`, 이름, 플랫폼, 등록·마지막 접속 시각), `refresh_tokens`(해시만), `usage_daily`(계정·날짜별 전송 수·바이트)
+  - 표: `users`(id, 구글 `sub`, 이메일, 이름, 사진 URL, 가입·마지막 로그인 시각), `identities`(제공자 + `sub`, Apple용 자리), `devices`(계정, `device_id`, 이름, 플랫폼, 등록·마지막 접속 시각), `refresh_tokens`(해시만), `usage_daily`(계정·날짜별 전송 수·바이트)
   - API: `POST /v1/auth/google {id_token}` → 구글 JWKS로 서명·`iss`·`aud`(허용 클라이언트 ID 목록)·`exp` 확인 → 계정 upsert → 접속 토큰(JWT, Ed25519 서명, 1시간) + 갱신 토큰(무작위, 30일, 쓸 때마다 교체), `POST /v1/auth/refresh`, `POST /v1/auth/logout`, `GET /v1/me`, `PUT /v1/devices/{device_id}`(이름·플랫폼 등록)
   - 접속 토큰 공개키를 `GET /v1/keys`로 공개(릴레이가 시작 시 읽음)
   - 로그: 요청 수·오류 집계만. 토큰·이메일은 로그 금지
@@ -487,14 +487,15 @@ CLI 명령 예시는 `cf` = `cargo run -q -p clip-ferry-cli --` 의 줄임이다
   - [ ] 로그인 전에는 서비스가 연결하지 않음
 - **사용자 확인 방법**: 구현 때 작성
 
-## F36. iOS 로그인 (구글)
+## F36. iOS 로그인 (구글 + Apple)
 
-- **목표**: iOS 앱이 구글 로그인 뒤에만 동작한다.
+- **목표**: iOS 앱이 구글 또는 Apple 로그인 뒤에만 동작한다.
 - **선행**: F33, F25(M4 확인 완료)
-- **범위**: Google Sign-In(SPM). 갱신 토큰은 키체인 그룹(확장들도 사용). 알림·공유 확장·단축어는 저장된 접속 토큰을 쓴다
-- **범위 밖**: Sign in with Apple(2026-11-06 사용자 결정으로 제외. App Store에 내려면 필요할 수 있다 — F40에서 다시 본다)
+- **범위**: Google Sign-In(SPM), Sign in with Apple(AuthenticationServices). 계정 서버 `POST /v1/auth/apple`(Apple JWKS, `aud` = 번들 ID). 갱신 토큰은 키체인 그룹(확장들도 사용). 알림·공유 확장·단축어는 저장된 접속 토큰을 쓴다
+- **범위 밖**: 구글·Apple 신원을 한 계정으로 합치기(각각 다른 계정으로 본다. 필요하면 나중에)
 - **완료 조건**
-  - [ ] 구글 로그인 → F21~F25 동작
+  - [ ] 구글·Apple 각각 로그인 → F21~F25 동작
+  - [ ] Apple "이메일 가리기"로 가입해도 동작
 - **사용자 확인 방법**: 구현 때 작성
 
 ## F37. 계정으로 기기 연결 (QR·코드 없이)
@@ -536,7 +537,7 @@ CLI 명령 예시는 `cf` = `cargo run -q -p clip-ferry-cli --` 의 줄임이다
 
 - **목표**: Pi가 아닌 공개 서버에서 누구나 로그인해 쓴다.
 - **선행**: F32~F39, **O-03·O-04 결정**
-- **범위**: 도메인, 클라우드에 릴레이 + 계정 서버 + MariaDB(백업 포함), 앱 기본 서버 주소, 개인정보처리방침 게시, 구글 OAuth 동의 화면 프로덕션 전환·검수, 앱에서 `wss://`만 허용(D-014 정책), iOS App Store 제출 시 Sign in with Apple 필요 여부 재검토(D-019)
+- **범위**: 도메인, 클라우드에 릴레이 + 계정 서버 + MariaDB(백업 포함), 앱 기본 서버 주소, 개인정보처리방침 게시, 구글 OAuth 동의 화면 프로덕션 전환·검수, 앱에서 `wss://`만 허용(D-014 정책)
 - **완료 조건·사용자 확인 방법**: 착수 때 합의
 
 ---
