@@ -106,7 +106,19 @@ jobs:
       - name: 코어(.so)와 Kotlin 바인딩
         env:
           ANDROID_NDK_HOME: ${{ env.ANDROID_NDK_LATEST_HOME }}
-        run: ./scripts/build-android-core.sh
+        run: |
+          set +e
+          ./scripts/build-android-core.sh > core.log 2>&1
+          status=$?
+          cat core.log
+          if [ $status -ne 0 ]; then
+            # 로그 원문은 로그인해야 보이므로 오류 줄과 마지막 줄을 주석으로 남긴다.
+            grep -E 'error|Error|unbound|No such|not found' core.log | tail -15 | while IFS= read -r line; do
+              echo "::error::$line"
+            done
+            tail -5 core.log | while IFS= read -r line; do echo "::error::(tail) $line"; done
+          fi
+          exit $status
       - name: 서명 키 풀기
         env:
           KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
@@ -126,7 +138,17 @@ jobs:
           if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
             export CLIPFERRY_VERSION_NAME="${GITHUB_REF_NAME#v}"
           fi
-          ./gradlew assembleRelease --console=plain
+          set +e
+          ./gradlew assembleRelease --console=plain > gradle.log 2>&1
+          status=$?
+          cat gradle.log
+          if [ $status -ne 0 ]; then
+            grep -E 'error|Error|FAILED|What went wrong' -A2 gradle.log | grep -v '^--$' | tail -15 | while IFS= read -r line; do
+              echo "::error::$line"
+            done
+            exit $status
+          fi
+          set -e
           name="clip-ferry-${CLIPFERRY_VERSION_NAME:-dev}-android.apk"
           mv app/build/outputs/apk/release/app-release.apk "../../$name"
           echo "APK=$name" >> "$GITHUB_ENV"
