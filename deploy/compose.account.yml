@@ -10,7 +10,10 @@ services:
       MARIADB_USER: clipferry
       MARIADB_PASSWORD: "${CF_DB_PASSWORD:?deploy/.env.account에 CF_DB_PASSWORD가 필요합니다}"
       MARIADB_RANDOM_ROOT_PASSWORD: "1"
-    # 포트를 밖으로 열지 않는다. 계정 서버만 내부 네트워크로 붙는다.
+    # 외부 DB 클라이언트용: 이 기기의 127.0.0.1:3307에만 연다(LAN·인터넷에는 안 열림).
+    # 다른 PC에서는 tailscale serve의 TCP 전달로 tailnet 안에서만 붙는다(deploy/README.md "DB 클라이언트로 접속").
+    ports:
+      - "127.0.0.1:${CF_DB_PORT:-3307}:3306"
     # 데이터는 Pi의 폴더에 둔다(Docker 볼륨이 아니라). 컨테이너를 지우거나 `down -v`·`prune`을 해도 남는다.
     volumes:
       - "${CF_DB_DIR:-/var/lib/clip-ferry/mariadb}:/var/lib/mysql"

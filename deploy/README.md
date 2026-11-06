@@ -131,6 +131,20 @@ curl https://<기기>.<tailnet>.ts.net:8443/healthz      # ok
 
 시험 페이지: `https://<기기>.<tailnet>.ts.net:8443/dev/google` (`CF_DEV_PAGES=true`일 때). 시험이 끝나면 `CF_DEV_PAGES=false`.
 
+### DB 클라이언트로 접속 (HeidiSQL·DBeaver 등)
+
+MariaDB는 Pi의 `127.0.0.1:3307`에만 열려 있다(포트는 `.env.account`의 `CF_DB_PORT`). 다른 PC에서는 `tailscale serve`로 **tailnet 안에서만** 연다. 공유기 포트포워딩이나 `0.0.0.0` 바인드는 하지 않는다(계정 이메일 등 개인정보가 있다).
+
+```bash
+sudo tailscale serve --bg --tcp 3307 tcp://127.0.0.1:3307
+tailscale serve status          # |-- tcp://raspberry-pi.…:3307 → tcp://127.0.0.1:3307
+grep CF_DB_PASSWORD deploy/.env.account   # 접속 암호
+```
+
+클라이언트 설정: 호스트 `<기기>.<tailnet>.ts.net`(또는 Pi의 Tailscale IP), 포트 `3307`, 사용자 `clipferry`, 암호는 위 값, DB `clipferry`. 끄려면 `sudo tailscale serve --tcp 3307 off`.
+
+- `clipferry` 사용자는 계정 서버가 쓰는 계정이라 모든 표를 고칠 수 있다. 행을 손으로 바꾸면 서버 동작이 꼬일 수 있으니 주로 조회에 쓴다. 갱신 토큰 표에는 해시만 있다.
+
 ### 백업
 
 돌고 있는 DB의 폴더를 그대로 복사하면 깨질 수 있으므로 덤프로 뜬다. 매일 돌리려면 `crontab -e`에 같은 명령을 넣는다.
