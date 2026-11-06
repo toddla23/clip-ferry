@@ -434,19 +434,19 @@ CLI 명령 예시는 `cf` = `cargo run -q -p clip-ferry-cli --` 의 줄임이다
 - **선행**: F14b (Pi 배포 환경)
 - **범위**
   - `account/`(크레이트 `clip-ferry-account`, axum + MariaDB, `sqlx` 마이그레이션)
-  - 표: `users`(id, 구글 `sub`, 이메일, 이름, 사진 URL, 가입·마지막 로그인 시각), `identities`(제공자 + `sub`, Apple용 자리), `devices`(계정, `device_id`, 이름, 플랫폼, 등록·마지막 접속 시각), `refresh_tokens`(해시만), `usage_daily`(계정·날짜별 전송 수·바이트)
+  - 표: `users`(id, 제공자 + 제공자 `sub` — 구글, 나중에 Apple, 이메일, 이름, 사진 URL, 가입·마지막 로그인 시각), `devices`(계정, `device_id`, 이름, 플랫폼, 등록·마지막 접속 시각), `refresh_tokens`(해시만), `usage_daily`(계정·날짜별 전송 수·바이트)
   - API: `POST /v1/auth/google {id_token}` → 구글 JWKS로 서명·`iss`·`aud`(허용 클라이언트 ID 목록)·`exp` 확인 → 계정 upsert → 접속 토큰(JWT, Ed25519 서명, 1시간) + 갱신 토큰(무작위, 30일, 쓸 때마다 교체), `POST /v1/auth/refresh`, `POST /v1/auth/logout`, `GET /v1/me`, `PUT /v1/devices/{device_id}`(이름·플랫폼 등록)
   - 접속 토큰 공개키를 `GET /v1/keys`로 공개(릴레이가 시작 시 읽음)
   - 로그: 요청 수·오류 집계만. 토큰·이메일은 로그 금지
   - `deploy/`: Pi용 compose에 계정 서버 + MariaDB(볼륨) 추가, `tailscale serve` 경로 추가. 구글 클라우드 콘솔 설정 절차(동의 화면 "테스트", 클라이언트 ID: 웹·데스크톱·Android·iOS)
-  - CLI `cf login --dev`: 개발 모드 계정 서버(`--dev-login` 켤 때만)에서 시험용 토큰을 받는다(D-010과 같은 개발 전용)
+  - 개발 전용: `POST /v1/auth/dev`(`--dev-login`, 구글 없이 이메일만으로 계정), `GET /dev/google` 구글 로그인 시험 페이지(`--dev-pages`), `--memory-store`(DB 없이)
 - **범위 밖**: 릴레이 연동(F33), 앱 화면(F34~F36)
 - **완료 조건**
   - [ ] 위조·만료·다른 `aud`·다른 `iss` 구글 토큰 거부 테스트(테스트용 JWKS)
   - [ ] 갱신 토큰 재사용(교체 뒤 옛 토큰) 시 그 계정의 갱신 토큰 전체 무효화 테스트
   - [ ] DB에 토큰 원문이 없음(해시만) 테스트
   - [ ] Pi에서 compose로 기동, 재부팅 후 자동 복구, DB 유지
-- **사용자 확인 방법**: `todo/F32-확인.md`(구현 때 작성. 구글 콘솔 설정 → 시험 페이지나 CLI로 실제 구글 로그인 → `GET /v1/me`에 내 이메일)
+- **사용자 확인 방법**: `todo/F32-확인.md` (구글 콘솔 설정 → 시험 페이지에서 실제 구글 로그인 → `GET /v1/me`에 내 이메일)
 
 ## F33. 릴레이 접속 토큰 확인 · 계정별 제한 · 사용량 집계
 
@@ -458,7 +458,7 @@ CLI 명령 예시는 `cf` = `cargo run -q -p clip-ferry-cli --` 의 줄임이다
   - 사용량: 메모리에서 계정별 게시 수·바이트를 모아 1분마다 계정 서버 내부 API(`POST /internal/usage`, 공유 비밀)로 보낸다. 채널 ID·태그·페이로드는 보내지 않는다. 릴레이는 여전히 디스크에 쓰지 않는다
   - 코어 `transport`: 접속 토큰 공급자(셸이 구현하는 콜백, 만료 전 갱신), 401이면 셸에 "다시 로그인" 상태
   - 계정 서버: 마지막 접속 시각 갱신, `usage_daily` 누적
-  - 개발 스위치: 릴레이 `--no-auth`(로컬 테스트·CLI 전용)
+  - 개발 스위치: 릴레이 `--no-auth`(로컬 테스트·CLI 전용), CLI `cf login --dev`(계정 서버 `POST /v1/auth/dev`로 시험용 토큰, D-010과 같은 개발 전용)
 - **완료 조건**
   - [ ] 토큰 없음·위조·만료 → 401, 정상 토큰 → 연결 통합 테스트
   - [ ] 계정 제한 초과 시 `RATE_LIMITED`, 다른 계정은 영향 없음

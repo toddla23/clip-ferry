@@ -1,0 +1,12 @@
+# clip-ferry 계정 서버 이미지 (F32, D-019). 빌드한 기기의 아키텍처로 만들어진다 (Pi 5 = arm64).
+FROM rust:1-bookworm AS build
+WORKDIR /src
+COPY . .
+RUN cargo build --release -p clip-ferry-account --locked
+
+# 런타임: 셸·패키지 관리자가 없는 최소 이미지, 비루트 사용자. 디스크에 쓰지 않는다(데이터는 MariaDB).
+FROM gcr.io/distroless/cc-debian12:nonroot
+COPY --from=build /src/target/release/clip-ferry-account /usr/local/bin/clip-ferry-account
+ENV CF_ACCOUNT_LISTEN=0.0.0.0:8788
+EXPOSE 8788
+ENTRYPOINT ["/usr/local/bin/clip-ferry-account"]

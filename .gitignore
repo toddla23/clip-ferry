@@ -23,6 +23,7 @@ DerivedData/
 .DS_Store
 Thumbs.db
 deploy/.env
+deploy/.env.account
 
 # Android: 코어 빌드 산출물(scripts/build-android-core가 만든다)
 /apps/android/app/src/main/jniLibs/

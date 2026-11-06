@@ -1,0 +1,45 @@
+# 계정 서버 + MariaDB (F32, D-019). 릴레이(compose.yml)와 따로 올린다.
+#   실행: docker compose --env-file deploy/.env.account -f deploy/compose.account.yml up -d --build
+# 값은 deploy/.env.account 에 둔다 (git에 넣지 않는다, deploy/README.md "계정 서버" 절).
+services:
+  mariadb:
+    image: mariadb:11.4
+    restart: unless-stopped
+    environment:
+      MARIADB_DATABASE: clipferry
+      MARIADB_USER: clipferry
+      MARIADB_PASSWORD: "${CF_DB_PASSWORD:?deploy/.env.account에 CF_DB_PASSWORD가 필요합니다}"
+      MARIADB_RANDOM_ROOT_PASSWORD: "1"
+    # 포트를 밖으로 열지 않는다. 계정 서버만 내부 네트워크로 붙는다.
+    volumes:
+      - account-db:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+
+  account:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.account
+    image: clip-ferry-account:local
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    depends_on:
+      mariadb:
+        condition: service_healthy
+    # 이 기기에서만 연다. 밖에서는 tailscale serve(https 8443)로 들어온다.
+    ports:
+      - "127.0.0.1:8788:8788"
+    environment:
+      CF_ACCOUNT_DATABASE_URL: "mysql://clipferry:${CF_DB_PASSWORD}@mariadb:3306/clipferry"
+      CF_ACCOUNT_SIGNING_KEY: "${CF_ACCOUNT_SIGNING_KEY:?deploy/.env.account에 CF_ACCOUNT_SIGNING_KEY가 필요합니다}"
+      CF_ACCOUNT_GOOGLE_CLIENT_IDS: "${CF_GOOGLE_CLIENT_IDS:-}"
+      CF_ACCOUNT_DEV_PAGES: "${CF_DEV_PAGES:-false}"
+      CF_ACCOUNT_DEV_LOGIN: "${CF_DEV_LOGIN:-false}"
+
+volumes:
+  account-db:

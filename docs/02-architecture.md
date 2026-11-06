@@ -84,7 +84,8 @@ pub trait SecretStore: Send + Sync {         // 셸이 구현 (플랫폼 보안 
 - axum + MariaDB(`sqlx`). 구글·Apple ID 토큰을 검증해 계정을 만들고, 릴레이 접속 토큰(JWT, 1시간)과 갱신 토큰(해시로만 저장)을 발급한다.
 - 저장: 계정 기본정보, 계정에 묶인 기기 목록, 일별 사용량(전송 수·바이트). 클립보드 내용·그룹 키는 저장하지도 받지도 않는다.
 - 릴레이는 DB를 보지 않고 접속 토큰 서명만 확인하며, 계정별 사용량을 1분마다 계정 서버 내부 API로 보낸다(F33).
-- 개발·시험은 Pi의 Docker(+ MariaDB 볼륨)에서, 공개 배포는 F40.
+- 개발·시험은 Pi의 Docker(+ MariaDB 볼륨)에서, 공개 배포는 F40. 배포는 `deploy/compose.account.yml`, API 목록은 `account/src/api.rs` 머리말.
+- 저장소는 `Store`(MariaDB / 메모리) 하나로 감싸 테스트는 메모리로 어디서나 돌고, CI의 `account (MariaDB)` 작업이 같은 테스트를 실제 MariaDB로 돌린다(`CF_TEST_MARIADB_URL`).
 
 ### FFI (`ffi/`, 크레이트 `clip-ferry-ffi`)
 

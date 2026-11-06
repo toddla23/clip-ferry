@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["core", "ffi", "relay", "tools/cli", "tools/uniffi-bindgen", "apps/desktop/src-tauri"]
+members = ["core", "ffi", "relay", "account", "tools/cli", "tools/uniffi-bindgen", "apps/desktop/src-tauri"]
 
 [workspace.package]
 version = "0.1.0"
