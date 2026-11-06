@@ -492,7 +492,7 @@ CLI 명령 예시는 `cf` = `cargo run -q -p clip-ferry-cli --` 의 줄임이다
 - **목표**: iOS 앱이 구글 또는 Apple 로그인 뒤에만 동작한다.
 - **선행**: F33, F25(M4 확인 완료)
 - **범위**: Google Sign-In(SPM), Sign in with Apple(AuthenticationServices). 계정 서버 `POST /v1/auth/apple`(Apple JWKS, `aud` = 번들 ID). 갱신 토큰은 키체인 그룹(확장들도 사용). 알림·공유 확장·단축어는 저장된 접속 토큰을 쓴다
-- **범위 밖**: 구글·Apple 신원을 한 계정으로 합치기(각각 다른 계정으로 본다. 필요하면 나중에)
+- **범위 밖**: 구글·Apple 신원을 한 계정으로 합치기(각각 다른 계정으로 본다. 필요하면 나중에), 데스크톱·Android의 Apple 로그인(F41)
 - **완료 조건**
   - [ ] 구글·Apple 각각 로그인 → F21~F25 동작
   - [ ] Apple "이메일 가리기"로 가입해도 동작
@@ -539,6 +539,15 @@ CLI 명령 예시는 `cf` = `cargo run -q -p clip-ferry-cli --` 의 줄임이다
 - **선행**: F32~F39, **O-03·O-04 결정**
 - **범위**: 도메인, 클라우드에 릴레이 + 계정 서버 + MariaDB(백업 포함), 앱 기본 서버 주소, 개인정보처리방침 게시, 구글 OAuth 동의 화면 프로덕션 전환·검수, 앱에서 `wss://`만 허용(D-014 정책)
 - **완료 조건·사용자 확인 방법**: 착수 때 합의
+
+## F41. 데스크톱 · Android Apple 로그인
+
+- **목표**: 아이폰에서 Apple로 가입한 사용자가 PC·Android에서도 같은 계정으로 로그인한다.
+- **선행**: F36, **O-03(도메인)** — 웹 방식 Sign in with Apple은 Apple에 등록한 https 도메인과 돌아올 주소(Services ID)가 필요하다
+- **범위**: Apple 웹 로그인(시스템 브라우저 → 계정 서버의 돌아올 주소 → 앱으로 넘김), 계정 서버 `POST /v1/auth/apple`을 웹 클라이언트(Services ID)도 받게, 데스크톱·Android 로그인 화면에 `Apple로 로그인`
+- **완료 조건**
+  - [ ] 아이폰에서 Apple로 가입한 계정으로 PC·Android 로그인 → 같은 기기 목록, F37 연결 동작
+- **사용자 확인 방법**: 구현 때 작성
 
 ---
 
