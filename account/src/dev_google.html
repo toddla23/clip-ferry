@@ -65,28 +65,28 @@ function takeTokens(r) {
 }
 
 async function onGoogle(resp) {
-  const r = await call('POST', 'v1/auth/google', { id_token: resp.credential });
+  const r = await call('POST', '/v1/auth/google', { id_token: resp.credential });
   if (r.status === 200) show(true, '로그인 성공', takeTokens(r));
   else show(false, '로그인 실패 (' + r.status + ')', r.json || r.text);
 }
 window.onGoogle = onGoogle;
 
 document.getElementById('me').onclick = async () => {
-  const r = await call('GET', 'v1/me', null, true);
+  const r = await call('GET', '/v1/me', null, true);
   show(r.status === 200, '/v1/me (' + r.status + ')', r.json || r.text);
 };
 document.getElementById('device').onclick = async () => {
   const id = Array.from(crypto.getRandomValues(new Uint8Array(16)), b => b.toString(16).padStart(2, '0')).join('');
-  const r = await call('PUT', 'v1/devices/' + id, { name: '시험 페이지', platform: 'cli' }, true);
+  const r = await call('PUT', '/v1/devices/' + id, { name: '시험 페이지', platform: 'cli' }, true);
   show(r.status === 200, '기기 등록 (' + r.status + ')', r.json || r.text);
 };
 document.getElementById('refresh').onclick = async () => {
-  const r = await call('POST', 'v1/auth/refresh', { refresh_token: refresh });
+  const r = await call('POST', '/v1/auth/refresh', { refresh_token: refresh });
   if (r.status === 200) show(true, '갱신 성공 (옛 갱신 토큰은 이제 못 쓴다)', takeTokens(r));
   else { access = null; setButtons(); show(false, '갱신 실패 (' + r.status + ')', r.json || r.text); }
 };
 document.getElementById('logout').onclick = async () => {
-  const r = await call('POST', 'v1/auth/logout', { refresh_token: refresh });
+  const r = await call('POST', '/v1/auth/logout', { refresh_token: refresh });
   access = null; refresh = null; setButtons();
   show(r.status === 204, '로그아웃 (' + r.status + ')', '갱신 토큰을 무효화했다');
 };

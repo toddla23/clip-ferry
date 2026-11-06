@@ -560,4 +560,7 @@ async fn dev_page_has_client_id() {
         .await
         .unwrap();
     assert!(html.contains(&format!("data-client_id=\"{CLIENT}\"")));
+    // 페이지가 /dev/ 아래에 있으므로 API는 절대 경로로 불러야 한다
+    assert!(html.contains("'/v1/auth/google'"));
+    assert!(!html.contains("'v1/"));
 }
