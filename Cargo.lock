@@ -996,6 +996,7 @@ dependencies = [
  "clap",
  "clip-ferry-account",
  "clip-ferry-core",
+ "ed25519-dalek",
  "futures-util",
  "jsonwebtoken",
  "prost",

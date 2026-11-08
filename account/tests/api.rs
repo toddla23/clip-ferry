@@ -847,3 +847,74 @@ async fn android_client_id_config() {
     assert_eq!(st, 200, "{v}");
     assert!(!s(&v, "refresh_token").is_empty());
 }
+
+/// 계정 연결(F37): 로그인한 기기의 공개키에 서명한 참여 확인서. 같은 계정 기기가 `/v1/keys`로 확인한다.
+#[tokio::test]
+async fn link_ticket_is_signed_for_the_logged_in_account() {
+    use ed25519_dalek::{Signature, VerifyingKey};
+    for (_, store) in stores().await {
+        let srv = start(store, false).await;
+        let (_, body) = srv.google_login(good_token(&new_sub())).await;
+        let access = s(&body, "access_token");
+        let user_id = body["user"]["id"].as_str().unwrap().to_string();
+        let req = json!({
+            "sign_pub": URL_SAFE_NO_PAD.encode([5u8; 32]),
+            "dh_pub": URL_SAFE_NO_PAD.encode([6u8; 32]),
+            "name": "새 폰",
+        });
+
+        let post = |token: Option<String>, body: Value| {
+            let mut r = srv
+                .http
+                .post(format!("{}/v1/link/ticket", srv.base))
+                .json(&body);
+            if let Some(t) = token {
+                r = r.bearer_auth(t);
+            }
+            async move {
+                let r = r.send().await.unwrap();
+                (
+                    r.status().as_u16(),
+                    r.json::<Value>().await.unwrap_or(Value::Null),
+                )
+            }
+        };
+        assert_eq!(post(None, req.clone()).await.0, 401);
+        assert_eq!(post(Some("nope".into()), req.clone()).await.0, 401);
+        let mut bad = req.clone();
+        bad["dh_pub"] = json!("short");
+        assert_eq!(
+            post(Some(access.clone()), bad).await,
+            (400, json!({"error": "bad_key"}))
+        );
+
+        let (st, t) = post(Some(access.clone()), req).await;
+        assert_eq!(st, 200, "{t}");
+        assert_eq!(t["user_id"], user_id.as_str());
+        assert_eq!(t["name"], "새 폰");
+        let expires = t["expires_at_ms"].as_u64().unwrap();
+        assert!(expires > now() as u64 * 1000);
+
+        let (_, jwks) = srv.get_auth("/v1/keys", None).await;
+        let k = &jwks["keys"][0];
+        assert_eq!(t["kid"], k["kid"]);
+        let public: [u8; 32] = URL_SAFE_NO_PAD
+            .decode(k["x"].as_str().unwrap())
+            .unwrap()
+            .try_into()
+            .unwrap();
+        let sig: [u8; 64] = URL_SAFE_NO_PAD
+            .decode(t["signature"].as_str().unwrap())
+            .unwrap()
+            .try_into()
+            .unwrap();
+        let msg = clip_ferry_account::link::ticket_message(
+            &user_id, &[5u8; 32], &[6u8; 32], "새 폰", expires,
+        )
+        .unwrap();
+        VerifyingKey::from_bytes(&public)
+            .unwrap()
+            .verify_strict(&msg, &Signature::from_bytes(&sig))
+            .expect("공개키로 확인되어야 한다");
+    }
+}

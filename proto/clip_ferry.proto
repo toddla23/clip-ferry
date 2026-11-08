@@ -136,6 +136,9 @@ message PairMessage {
     PairOffer offer = 2;
     PairWelcome welcome = 3;
     PairReject reject = 4;
+    // 4.4 계정 연결(봉인 후 공개)에서만 쓴다
+    PairCommit commit = 5;
+    PairReveal reveal = 6;
   }
 }
 
@@ -149,6 +152,21 @@ message PairOffer {
   bytes sign_pub = 1;
   bytes dh_pub = 2;
   string name = 3;
+  bytes nonce = 4;  // 4.4 계정 연결에서만: 초대한 쪽의 무작위 32바이트
+}
+
+// 4.4: 참여하는 쪽이 키를 보이기 전에 먼저 보내는 봉인값
+// commitment = SHA-256("clip-ferry v1 commit" || sign_pub || dh_pub || nonce)
+message PairCommit {
+  bytes commitment = 1;
+}
+
+// 4.4: PairOffer를 받은 뒤 공개하는 키와 nonce (commitment와 맞아야 한다)
+message PairReveal {
+  bytes sign_pub = 1;
+  bytes dh_pub = 2;
+  string name = 3;
+  bytes nonce = 4;
 }
 
 // wrapped = wrap_for(B, group_key || epoch || 직렬화된 Roster)
@@ -159,6 +177,43 @@ message PairWelcome {
 }
 
 message PairReject {}
+
+// ---------------------------------------------------------------------------
+// 4.4 계정 연결 (F37). 계정 채널에 봉인 없이 게시한다
+// account_channel = HKDF(user_id, "clip-ferry v1 account-channel")
+// ---------------------------------------------------------------------------
+
+// 계정 서버가 서명한 참여 확인서.
+// signature = Ed25519(계정 서버 키, "clip-ferry v1 link-ticket" || u8 len || user_id
+//             || sign_pub || dh_pub || u8 len || name || u64_le expires_at_ms)
+message LinkTicket {
+  string user_id = 1;
+  bytes sign_pub = 2;
+  bytes dh_pub = 3;
+  string name = 4;
+  uint64 expires_at_ms = 5;
+  string kid = 6;
+  bytes signature = 7;
+}
+
+message LinkMessage {
+  oneof kind {
+    LinkRequest request = 1;
+    LinkInvite invite = 2;
+  }
+}
+
+// 새 기기 -> 계정의 기기들
+message LinkRequest {
+  bytes request_id = 1;  // 무작위 16바이트
+  LinkTicket ticket = 2;
+}
+
+// 기존 기기 -> 새 기기. wrapped = wrap_for(새 기기, invite_secret(32))
+message LinkInvite {
+  bytes request_id = 1;
+  WrappedKey wrapped = 2;
+}
 
 // ---------------------------------------------------------------------------
 // 5. 릴레이 프로토콜

@@ -883,6 +883,7 @@ mod epochs;
 mod group_tests;
 #[cfg(test)]
 mod image_tests;
+mod link;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]

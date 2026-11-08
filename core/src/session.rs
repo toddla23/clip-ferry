@@ -11,6 +11,7 @@ use tokio::time::timeout;
 use crate::api::{now_ms, Clip, ClipFerry, Error, GroupHealth, ImageClip, Incoming};
 use crate::crypto::DeviceId;
 use crate::envelope::Source;
+use crate::link::{self, AccountLink, LinkRequestInfo};
 use crate::pb::ErrorCode;
 use crate::transport::{Client, Event, TransportConfig};
 
@@ -31,6 +32,9 @@ pub trait EventSink: Send + Sync {
     fn on_group_health(&self, _health: GroupHealth) {}
     /// 그룹 채널에 붙어 있는 기기가 바뀌었다 (이 기기 포함). 연결이 끊기면 빈 목록이 온다.
     fn on_presence(&self, _online: Vec<DeviceId>) {}
+    /// 같은 계정의 새 기기가 참여를 요청했다(F37, `Session::set_account_link`). 참여 확인서는 확인했다.
+    /// 요청마다 한 번 온다. 사용자가 응하면 `pair_flow::start_link_invite`를 부른다.
+    fn on_link_request(&self, _request: LinkRequestInfo) {}
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -56,6 +60,8 @@ pub enum SendError {
 
 type Pending = Arc<Mutex<HashMap<u32, oneshot::Sender<Result<u32, SendError>>>>>;
 type Subscribed = Arc<Mutex<HashSet<[u8; 32]>>>;
+/// 계정 채널 구독(F37): 계정 정보와 이 세션에서 쓰는 태그
+type LinkSlot = Arc<Mutex<Option<(AccountLink, [u8; 16])>>>;
 
 /// 릴레이에 붙어 있는 동안 살아 있는 세션. 드롭하면 연결을 닫는다.
 pub struct Session {
@@ -63,6 +69,7 @@ pub struct Session {
     client: Client,
     pending: Pending,
     subscribed: Subscribed,
+    link: LinkSlot,
     connected: watch::Receiver<bool>,
     online: watch::Receiver<usize>,
     task: JoinHandle<()>,
@@ -74,16 +81,23 @@ impl Drop for Session {
     }
 }
 
-/// 앱이 원하는 구독(현재 + 유예 중인 이전 에포크)에 연결의 구독을 맞춘다.
-fn sync_subscriptions(app: &ClipFerry, client: &Client, subscribed: &Subscribed) {
-    let want = app.subscriptions();
+/// 앱이 원하는 구독(현재 + 유예 중인 이전 에포크, 계정 채널)에 연결의 구독을 맞춘다.
+fn sync_subscriptions(app: &ClipFerry, client: &Client, subscribed: &Subscribed, link: &LinkSlot) {
+    let mut want: Vec<([u8; 32], [u8; 16])> = app
+        .subscriptions()
+        .iter()
+        .map(|s| (s.channel_id.0, s.device_tag.0))
+        .collect();
+    if let Some((l, tag)) = link.lock().unwrap().as_ref() {
+        want.push((l.channel(), *tag));
+    }
     let mut have = subscribed.lock().unwrap();
-    for s in &want {
-        if have.insert(s.channel_id.0) {
-            client.subscribe(s.channel_id.0, s.device_tag.0);
+    for (channel, tag) in &want {
+        if have.insert(*channel) {
+            client.subscribe(*channel, *tag);
         }
     }
-    let wanted: HashSet<[u8; 32]> = want.iter().map(|s| s.channel_id.0).collect();
+    let wanted: HashSet<[u8; 32]> = want.iter().map(|(c, _)| *c).collect();
     for channel in have.clone() {
         if !wanted.contains(&channel) {
             client.unsubscribe(channel);
@@ -109,7 +123,8 @@ impl ClipFerry {
 
         let (client, mut events) = Client::connect(relay_url, config);
         let subscribed: Subscribed = Arc::default();
-        sync_subscriptions(self, &client, &subscribed);
+        let link: LinkSlot = Arc::default();
+        sync_subscriptions(self, &client, &subscribed, &link);
 
         let pending: Pending = Arc::default();
         let (connected_tx, connected) = watch::channel(false);
@@ -118,8 +133,11 @@ impl ClipFerry {
         let task_pending = pending.clone();
         let task_client = client.clone();
         let task_subscribed = subscribed.clone();
+        let task_link = link.clone();
         // 이미 따라잡기 응답을 보낸 (에포크, 기기 태그)
         let mut pushed: HashSet<(u64, Vec<u8>)> = HashSet::new();
+        // 이미 알린 계정 연결 요청
+        let mut asked: HashSet<[u8; 16]> = HashSet::new();
 
         let task = tokio::spawn(async move {
             while let Some(event) = events.recv().await {
@@ -128,7 +146,7 @@ impl ClipFerry {
                         let _ = connected_tx.send(true);
                         sink.on_status(ConnectionStatus::Connected);
                         app.prune_expired(now_ms());
-                        sync_subscriptions(&app, &task_client, &task_subscribed);
+                        sync_subscriptions(&app, &task_client, &task_subscribed, &task_link);
                         // 밀려 있었다면 최신 키를 받고, 같은 에포크라면 생존 신호가 된다.
                         if let Ok(query) = app.seal_epoch_query(now_ms()) {
                             task_client.publish(query.channel_id.0, query.bytes, vec![]);
@@ -147,18 +165,39 @@ impl ClipFerry {
                     Event::Reconnecting { .. } => sink.on_status(ConnectionStatus::Reconnecting),
                     Event::Unauthorized => sink.on_auth_required(),
                     Event::Deliver(d) => {
+                        let account = task_link.lock().unwrap().as_ref().map(|(l, _)| l.clone());
+                        if let Some(l) = account.filter(|l| l.channel() == d.channel_id.as_slice())
+                        {
+                            if let Some(Ok(req)) = link::parse_request(&d.payload, &l, now_ms()) {
+                                if !app.is_member(&req.device_id()) && asked.insert(req.request_id)
+                                {
+                                    sink.on_link_request(req);
+                                }
+                            }
+                            continue;
+                        }
                         match app.handle_deliver(&d.payload, Source::Relay, now_ms()) {
                             Ok(Incoming::Clip(clip)) => sink.on_clip(clip),
                             Ok(Incoming::Image(image)) => sink.on_image(image),
                             Ok(Incoming::DevicesChanged) => sink.on_devices_changed(),
                             Ok(Incoming::EpochChanged(epoch)) => {
-                                sync_subscriptions(&app, &task_client, &task_subscribed);
+                                sync_subscriptions(
+                                    &app,
+                                    &task_client,
+                                    &task_subscribed,
+                                    &task_link,
+                                );
                                 sink.on_epoch_changed(epoch);
                                 sink.on_devices_changed();
                                 sink.on_group_health(GroupHealth::Active);
                             }
                             Ok(Incoming::Removed) => {
-                                sync_subscriptions(&app, &task_client, &task_subscribed);
+                                sync_subscriptions(
+                                    &app,
+                                    &task_client,
+                                    &task_subscribed,
+                                    &task_link,
+                                );
                                 sink.on_group_health(GroupHealth::Removed);
                             }
                             Ok(Incoming::Replies(replies)) => {
@@ -209,6 +248,7 @@ impl ClipFerry {
             client,
             pending,
             subscribed,
+            link,
             connected,
             online,
             task,
@@ -223,6 +263,23 @@ fn resolve(pending: &Pending, request_id: u32, result: Result<u32, SendError>) {
 }
 
 impl Session {
+    /// 계정 채널을 듣기 시작한다(F37). 같은 계정의 새 기기가 보낸 참여 요청이
+    /// `EventSink::on_link_request`로 온다. `None`이면 그만 듣는다(로그아웃).
+    pub fn set_account_link(&self, account: Option<AccountLink>) {
+        {
+            let mut slot = self.link.lock().unwrap();
+            if slot.as_ref().map(|(l, _)| l) == account.as_ref() {
+                return;
+            }
+            *slot = account.map(|l| {
+                let mut tag = [0u8; 16];
+                tag.copy_from_slice(&crate::crypto::GroupKey::generate().as_bytes()[..16]);
+                (l, tag)
+            });
+        }
+        sync_subscriptions(&self.app, &self.client, &self.subscribed, &self.link);
+    }
+
     /// 릴레이에 연결될 때까지 기다린다. 시간 안에 연결되면 `true`.
     pub async fn wait_connected(&self, wait: Duration) -> bool {
         let mut rx = self.connected.clone();
@@ -307,7 +364,7 @@ impl Session {
             // 아직 이전 채널을 구독 중이므로 게시할 수 있다.
             delivered += self.publish(m.channel_id.0, m.bytes).await?;
         }
-        sync_subscriptions(&self.app, &self.client, &self.subscribed);
+        sync_subscriptions(&self.app, &self.client, &self.subscribed, &self.link);
         Ok(delivered)
     }
 }

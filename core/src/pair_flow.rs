@@ -1,6 +1,7 @@
 //! 릴레이를 통한 페어링 진행 (docs/03-protocol.md 4절).
 //!
 //! `pairing`의 상태 기계에 릴레이 연결을 붙여 처음부터 끝까지 돌리는 작업을 만든다.
+//! 계정 연결(4.4, F37)은 `start_link_invite`·`start_link_join`.
 //! 셸은 `on_update`로 진행 상황을 받고, 초대하는 쪽은 `decide`로 승인·거절을 알린다.
 //! 두 함수 모두 tokio 런타임 안에서 불러야 한다. 반환된 값을 드롭하면 작업이 멈춘다.
 
@@ -13,9 +14,11 @@ use tokio::time::timeout;
 
 use crate::api::{now_ms, ClipFerry, Error};
 use crate::crypto::GroupKey;
+use crate::link::{self, LinkRequestInfo};
 use crate::pairing::{
-    Invite, InviteError, InviteProblem, InviterEvent, JoinerEvent, INVITE_TTL_MS,
+    Invite, InviteError, InviteProblem, Inviter, InviterEvent, Joiner, JoinerEvent, INVITE_TTL_MS,
 };
+use crate::pb;
 use crate::transport::{Client, Event, TransportConfig};
 
 /// 진행을 시작하지 못한 이유 (잘못된 코드, 이미 그룹이 있음 등).
@@ -105,14 +108,57 @@ pub fn start_invite(
     config: TransportConfig,
     on_update: impl Fn(InviteUpdate) + Send + Sync + 'static,
 ) -> Result<InviteFlow, Error> {
-    let mut inviter = app.create_invite(Some(relay_url.to_string()))?;
-    let pair_channel = inviter.invite().pair_channel();
+    let inviter = app.create_invite(Some(relay_url.to_string()))?;
     let text_code = inviter.invite().text_code();
     let qr_string = inviter.invite().qr_string();
+    Ok(run_invite(
+        app, relay_url, config, inviter, None, text_code, qr_string, on_update,
+    ))
+}
+
+/// 같은 계정의 새 기기가 보낸 참여 요청(`Session`의 `EventSink::on_link_request`)에 응한다.
+/// 계정 채널에 `LinkInvite`를 게시하고, 그 뒤는 QR 초대와 같다(`Request` → `decide`).
+/// 돌려받는 `InviteFlow`의 `text_code`·`qr_string`은 비어 있다.
+pub fn start_link_invite(
+    app: &Arc<ClipFerry>,
+    relay_url: &str,
+    config: TransportConfig,
+    account_channel: [u8; 32],
+    request: &LinkRequestInfo,
+    on_update: impl Fn(InviteUpdate) + Send + Sync + 'static,
+) -> Result<InviteFlow, Error> {
+    let (inviter, message) = app.create_link_invite(request)?;
+    Ok(run_invite(
+        app,
+        relay_url,
+        config,
+        inviter,
+        Some((account_channel, message)),
+        String::new(),
+        String::new(),
+        on_update,
+    ))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_invite(
+    app: &Arc<ClipFerry>,
+    relay_url: &str,
+    config: TransportConfig,
+    mut inviter: Inviter,
+    announce: Option<([u8; 32], Vec<u8>)>,
+    text_code: String,
+    qr_string: String,
+    on_update: impl Fn(InviteUpdate) + Send + Sync + 'static,
+) -> InviteFlow {
+    let pair_channel = inviter.invite().pair_channel();
     let expires_at_ms = inviter.expires_at_ms();
 
     let (client, mut events) = Client::connect(relay_url, config);
     client.subscribe(pair_channel, random_tag());
+    if let Some((channel, _)) = &announce {
+        client.subscribe(*channel, random_tag());
+    }
     let (decide, mut decisions) = mpsc::unbounded_channel::<bool>();
     let app = app.clone();
 
@@ -120,6 +166,9 @@ pub fn start_invite(
         let deadline = tokio::time::Instant::now()
             + Duration::from_millis(expires_at_ms.saturating_sub(now_ms()));
         let mut asked = false;
+        // 계정 연결: 새 기기가 응답할 때까지 `LinkInvite`를 다시 게시한다.
+        let mut heard = announce.is_none();
+        let mut resend = tokio::time::interval(Duration::from_secs(3));
         let end = |msg: &str| on_update(InviteUpdate::Ended(msg.to_string()));
         loop {
             tokio::select! {
@@ -130,13 +179,23 @@ pub fn start_invite(
                     }
                     return end("초대가 만료되었습니다");
                 }
+                _ = resend.tick(), if !heard => {
+                    if let Some((channel, message)) = &announce {
+                        client.publish(*channel, message.clone(), vec![]);
+                    }
+                }
                 ev = events.recv() => {
                     let Some(ev) = ev else { return end("릴레이 연결이 종료되었습니다") };
                     let Event::Deliver(d) = ev else { continue };
                     if d.channel_id != pair_channel { continue }
                     match inviter.handle(&d.payload, now_ms()) {
                         InviterEvent::None => {}
+                        InviterEvent::Reply(payload) => {
+                            heard = true;
+                            client.publish(pair_channel, payload, vec![]);
+                        }
                         InviterEvent::Offer { payload, joiner_name, sas } => {
+                            heard = true;
                             client.publish(pair_channel, payload, vec![]);
                             if !asked {
                                 asked = true;
@@ -179,13 +238,13 @@ pub fn start_invite(
         }
     });
 
-    Ok(InviteFlow {
+    InviteFlow {
         text_code,
         qr_string,
         expires_at_ms,
         decide,
         task,
-    })
+    }
 }
 
 // ---------------------------------------------------------------- 참여하는 쪽
@@ -193,6 +252,7 @@ pub fn start_invite(
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum JoinUpdate {
     /// 릴레이에 연결되었다. 초대한 기기의 응답을 기다린다.
+    /// (계정 연결이면 계정의 다른 기기가 요청에 응하기를 기다린다.)
     Connected,
     /// 초대한 기기가 응답했다. 같은 `sas`가 그쪽 화면에도 떠 있는지 확인하고 승인을 기다린다.
     WaitingApproval { inviter_name: String, sas: String },
@@ -227,28 +287,99 @@ pub fn start_join(
     let relay = relay_override
         .or_else(|| invite.relay().map(str::to_string))
         .unwrap_or_else(|| default_relay.to_string());
-    let mut joiner = app.join(invite)?;
-    let pair_channel = joiner.invite().pair_channel();
+    let joiner = app.join(invite)?;
+    Ok(run_join(
+        app,
+        &relay,
+        config,
+        Stage::Joining(Box::new(joiner)),
+        on_update,
+    ))
+}
 
-    let (client, mut events) = Client::connect(&relay, config);
-    client.subscribe(pair_channel, random_tag());
+/// 같은 계정으로 로그인한 다른 기기에 참여를 요청한다(F37).
+/// `ticket`은 계정 서버가 이 기기의 공개키로 서명해 준 참여 확인서다.
+/// 계정의 기기가 응하면(`LinkInvite`) 봉인 후 공개 페어링으로 이어진다.
+pub fn start_link_join(
+    app: &Arc<ClipFerry>,
+    relay_url: &str,
+    config: TransportConfig,
+    ticket: pb::LinkTicket,
+    on_update: impl Fn(JoinUpdate) + Send + Sync + 'static,
+) -> Result<JoinFlow, Error> {
+    if app.connection().is_some() {
+        return Err(Error::GroupExists);
+    }
+    app.link_identity()?;
+    let channel = link::account_channel(&ticket.user_id);
+    let (request_id, request) = link::build_request(ticket);
+    Ok(run_join(
+        app,
+        relay_url,
+        config,
+        Stage::Asking {
+            channel,
+            request_id,
+            request,
+        },
+        on_update,
+    ))
+}
+
+enum Stage {
+    /// 계정 연결: 계정 채널에 요청을 올리고 `LinkInvite`를 기다린다.
+    Asking {
+        channel: [u8; 32],
+        request_id: [u8; 16],
+        request: Vec<u8>,
+    },
+    Joining(Box<Joiner>),
+}
+
+fn run_join(
+    app: &Arc<ClipFerry>,
+    relay_url: &str,
+    config: TransportConfig,
+    mut stage: Stage,
+    on_update: impl Fn(JoinUpdate) + Send + Sync + 'static,
+) -> JoinFlow {
+    let (client, mut events) = Client::connect(relay_url, config);
+    match &stage {
+        Stage::Asking { channel, .. } => client.subscribe(*channel, random_tag()),
+        Stage::Joining(j) => client.subscribe(j.invite().pair_channel(), random_tag()),
+    }
     let app = app.clone();
 
     let task = tokio::spawn(async move {
-        // 초대한 쪽이 아직 구독하기 전일 수 있으므로 응답이 올 때까지 다시 보낸다.
+        // 상대가 아직 구독하기 전일 수 있으므로 응답이 올 때까지 다시 보낸다.
         let mut resend = tokio::time::interval(Duration::from_secs(3));
         let mut connected = false;
         let mut offered = false;
         let give_up = tokio::time::Instant::now() + Duration::from_millis(INVITE_TTL_MS);
         let end = |msg: &str| on_update(JoinUpdate::Ended(msg.to_string()));
+        let send = |stage: &Stage| match stage {
+            Stage::Asking {
+                channel, request, ..
+            } => {
+                client.publish(*channel, request.clone(), vec![]);
+            }
+            Stage::Joining(j) => {
+                if let Some(m) = j.outgoing() {
+                    client.publish(j.invite().pair_channel(), m, vec![]);
+                }
+            }
+        };
         loop {
             tokio::select! {
                 _ = tokio::time::sleep_until(give_up) => {
-                    return end("시간이 초과되었습니다. 초대한 기기가 응답하지 않았습니다");
+                    return end(match stage {
+                        Stage::Asking { .. } => {
+                            "시간이 초과되었습니다. 같은 계정의 다른 기기에서 앱이 켜져 있는지 확인하세요"
+                        }
+                        Stage::Joining(_) => "시간이 초과되었습니다. 초대한 기기가 응답하지 않았습니다",
+                    });
                 }
-                _ = resend.tick(), if connected && !offered => {
-                    client.publish(pair_channel, joiner.hello(), vec![]);
-                }
+                _ = resend.tick(), if connected => send(&stage),
                 ev = events.recv() => {
                     let Some(ev) = ev else { return end("릴레이 연결이 종료되었습니다") };
                     match ev {
@@ -257,32 +388,49 @@ pub fn start_join(
                                 on_update(JoinUpdate::Connected);
                             }
                             connected = true;
-                            client.publish(pair_channel, joiner.hello(), vec![]);
+                            send(&stage);
                         }
                         Event::Disconnected => connected = false,
-                        Event::Deliver(d) if d.channel_id == pair_channel => {
-                            match joiner.handle(&d.payload) {
-                                JoinerEvent::None => {}
-                                JoinerEvent::Offer { sas, inviter_name } => {
-                                    if !offered {
-                                        offered = true;
-                                        on_update(JoinUpdate::WaitingApproval { inviter_name, sas });
+                        Event::Deliver(d) => match &mut stage {
+                            Stage::Asking { channel, request_id, .. } => {
+                                if d.channel_id != *channel { continue }
+                                let joiner = match app.link_join(&d.payload, request_id) {
+                                    Ok(Some(j)) => j,
+                                    Ok(None) => continue,
+                                    Err(e) => return end(&e.to_string()),
+                                };
+                                client.unsubscribe(*channel);
+                                client.subscribe(joiner.invite().pair_channel(), random_tag());
+                                stage = Stage::Joining(Box::new(joiner));
+                                send(&stage);
+                            }
+                            Stage::Joining(joiner) => {
+                                if d.channel_id != joiner.invite().pair_channel() { continue }
+                                match joiner.handle(&d.payload) {
+                                    JoinerEvent::None => {}
+                                    JoinerEvent::Offer { sas, inviter_name } => {
+                                        if !offered {
+                                            offered = true;
+                                            // 계정 연결은 여기서 키를 공개한다(`PairReveal`).
+                                            send(&stage);
+                                            on_update(JoinUpdate::WaitingApproval { inviter_name, sas });
+                                        }
+                                    }
+                                    JoinerEvent::Joined(joined) => {
+                                        return match app.accept_join(joined) {
+                                            Ok(()) => on_update(JoinUpdate::Joined),
+                                            Err(e) => end(&e.to_string()),
+                                        };
+                                    }
+                                    JoinerEvent::Rejected => {
+                                        return end("초대한 기기가 거절했거나 초대가 만료되었습니다");
+                                    }
+                                    JoinerEvent::Failed(e) => {
+                                        return end(&format!("참여하지 못했습니다: {e}"));
                                     }
                                 }
-                                JoinerEvent::Joined(joined) => {
-                                    return match app.accept_join(joined) {
-                                        Ok(()) => on_update(JoinUpdate::Joined),
-                                        Err(e) => end(&e.to_string()),
-                                    };
-                                }
-                                JoinerEvent::Rejected => {
-                                    return end("초대한 기기가 거절했거나 초대가 만료되었습니다");
-                                }
-                                JoinerEvent::Failed(e) => {
-                                    return end(&format!("참여하지 못했습니다: {e}"));
-                                }
                             }
-                        }
+                        },
                         _ => {}
                     }
                 }
@@ -290,5 +438,5 @@ pub fn start_join(
         }
     });
 
-    Ok(JoinFlow { task })
+    JoinFlow { task }
 }

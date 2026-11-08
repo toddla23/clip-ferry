@@ -12,6 +12,7 @@
 //! | `POST /v1/auth/logout` `{refresh_token}` | 그 로그인의 갱신 토큰 무효화 |
 //! | `GET /v1/me` | 내 계정과 기기 (Bearer 접속 토큰) |
 //! | `PUT /v1/devices/{device_id}` `{name, platform}` | 기기 등록·갱신 (Bearer) |
+//! | `POST /v1/link/ticket` `{sign_pub, dh_pub, name}` | 계정 연결 참여 확인서 (Bearer, F37) |
 //! | `POST /internal/usage` `{entries: [{user_id, messages, bytes}]}` | 릴레이가 보내는 사용량 (Bearer 공유 비밀, F33) |
 //! | `POST /v1/auth/dev` `{email, name}` | 개발용 로그인 (`--dev-login`일 때만) |
 //! | `GET /dev/google` | 구글 로그인 시험 페이지 (`--dev-pages`일 때만) |
@@ -63,7 +64,8 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/v1/auth/refresh", post(auth_refresh))
         .route("/v1/auth/logout", post(auth_logout))
         .route("/v1/me", get(me))
-        .route("/v1/devices/:device_id", put(put_device));
+        .route("/v1/devices/:device_id", put(put_device))
+        .route("/v1/link/ticket", post(link_ticket));
     if state.dev_login {
         r = r.route("/v1/auth/dev", post(auth_dev));
     }
@@ -436,6 +438,26 @@ async fn put_device(
         .upsert_device(&user_id, &device_id, name, &body.platform, crate::now_ms())
         .await?;
     Ok(Json(d))
+}
+
+/// 계정 연결(F37): 이 계정에 로그인한 새 기기의 공개키에 서명해 준다.
+async fn link_ticket(
+    State(s): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(body): Json<crate::link::TicketRequest>,
+) -> ApiResult<Json<crate::link::Ticket>> {
+    let user_id = bearer_user(&s, &headers)?;
+    // 지워진 계정의 토큰이 아직 살아 있어도 확인서는 주지 않는다
+    s.store
+        .user(&user_id)
+        .await?
+        .ok_or_else(ApiError::unauthorized)?;
+    crate::link::issue(&s.signer, &user_id, &body, crate::now_ms())
+        .map(Json)
+        .map_err(|e| match e {
+            crate::link::TicketError::BadKey => ApiError::bad("bad_key"),
+            crate::link::TicketError::BadName => ApiError::bad("bad_name"),
+        })
 }
 
 #[derive(Deserialize)]

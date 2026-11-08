@@ -4,6 +4,7 @@ pub mod api;
 pub mod crypto;
 pub mod envelope;
 pub mod group;
+pub mod link;
 pub mod pair_flow;
 pub mod pairing;
 pub mod session;
