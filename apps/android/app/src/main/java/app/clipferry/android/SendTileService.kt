@@ -10,16 +10,21 @@ import android.service.quicksettings.TileService
 
 /**
  * 빠른 설정 타일 "클립보드 보내기" (F18). 누르면 패널을 닫고 [SendActivity]를 연다.
- * 타일은 그룹이 있으면 켜진 모양, 없으면 꺼진 모양이다(눌러도 안내만 나온다).
+ * 타일은 로그인했고 그룹이 있으면 켜진 모양, 아니면 꺼진 모양이다(눌러도 안내만 나온다).
  */
 class SendTileService : TileService() {
     override fun onStartListening() {
         super.onStartListening()
         val tile = qsTile ?: return
         val state = CoreController.state.value
-        tile.state = if (state.hasGroup && !state.removed) Tile.STATE_ACTIVE else Tile.STATE_INACTIVE
+        tile.state = if (state.signedIn && state.hasGroup && !state.removed) {
+            Tile.STATE_ACTIVE
+        } else {
+            Tile.STATE_INACTIVE
+        }
         if (Build.VERSION.SDK_INT >= 29) {
             tile.subtitle = when {
+                !state.signedIn -> "로그인 필요"
                 !state.hasGroup -> "그룹 없음"
                 state.removed -> "다시 페어링 필요"
                 state.link == Link.CONNECTED -> "연결됨"

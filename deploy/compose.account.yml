@@ -47,6 +47,8 @@ services:
       CF_ACCOUNT_DATABASE_URL: "mysql://clipferry:${CF_DB_PASSWORD}@mariadb:3306/clipferry"
       CF_ACCOUNT_SIGNING_KEY: "${CF_ACCOUNT_SIGNING_KEY:?deploy/.env.account에 CF_ACCOUNT_SIGNING_KEY가 필요합니다}"
       CF_ACCOUNT_GOOGLE_CLIENT_IDS: "${CF_GOOGLE_CLIENT_IDS:-}"
+      # Android 앱이 serverClientId로 쓸 웹 클라이언트 ID (F35). 비우면 CF_GOOGLE_CLIENT_IDS의 첫 번째
+      CF_ACCOUNT_GOOGLE_WEB_CLIENT_ID: "${CF_GOOGLE_WEB_CLIENT_ID:-}"
       # 데스크톱 앱 구글 로그인 (F34, D-020). "데스크톱 앱" 유형 클라이언트의 ID와 보안 비밀. 비우면 끈다
       CF_ACCOUNT_GOOGLE_DESKTOP_CLIENT_ID: "${CF_GOOGLE_DESKTOP_CLIENT_ID:-}"
       CF_ACCOUNT_GOOGLE_DESKTOP_CLIENT_SECRET: "${CF_GOOGLE_DESKTOP_CLIENT_SECRET:-}"

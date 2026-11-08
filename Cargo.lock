@@ -973,9 +973,14 @@ dependencies = [
 name = "clip-ferry-ffi"
 version = "0.1.0"
 dependencies = [
+ "axum",
+ "clip-ferry-account",
  "clip-ferry-core",
  "clip-ferry-relay",
  "qrcode",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
  "tempfile",
  "thiserror 1.0.69",
  "tokio",

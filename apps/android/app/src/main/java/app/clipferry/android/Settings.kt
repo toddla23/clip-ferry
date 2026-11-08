@@ -11,6 +11,11 @@ class Settings(context: Context) {
         get() = prefs.getString(KEY_RELAY, DEFAULT_RELAY) ?: DEFAULT_RELAY
         set(value) = prefs.edit().putString(KEY_RELAY, value).apply()
 
+    /** 계정 서버 주소 (F35). 로그아웃 상태에서만 바꾼다. 기본값은 에뮬레이터에서 본 PC의 로컬 계정 서버. */
+    var accountUrl: String
+        get() = prefs.getString(KEY_ACCOUNT, DEFAULT_ACCOUNT) ?: DEFAULT_ACCOUNT
+        set(value) = prefs.edit().putString(KEY_ACCOUNT, value).apply()
+
     var serviceEnabled: Boolean
         get() = prefs.getBoolean(KEY_SERVICE, true)
         set(value) = prefs.edit().putBoolean(KEY_SERVICE, value).apply()
@@ -34,5 +39,7 @@ class Settings(context: Context) {
         const val KEY_SERVICE = "service_enabled"
         const val KEY_NOTIFY_RECEIVE = "notify_on_receive"
         const val DEFAULT_RELAY = "ws://10.0.2.2:8787"
+        const val KEY_ACCOUNT = "account_url"
+        const val DEFAULT_ACCOUNT = "http://10.0.2.2:8788"
     }
 }

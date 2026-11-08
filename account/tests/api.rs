@@ -55,15 +55,21 @@ struct Server {
 }
 
 async fn start(store: Store, dev_login: bool) -> Server {
-    let state = Arc::new(AppState {
+    serve(AppState {
         store,
         signer: Signer::from_seed(&[42u8; 32]),
         google: GoogleVerifier::new(vec![CLIENT.into()], static_google_keys()),
         google_desktop: None,
+        google_android: None,
         dev_login,
         dev_pages: true,
         usage_secret: Some(USAGE_SECRET.into()),
-    });
+    })
+    .await
+}
+
+async fn serve(state: AppState) -> Server {
+    let state = Arc::new(state);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let app = router(state.clone());
@@ -675,6 +681,7 @@ async fn start_desktop(token_url: &str) -> Server {
         signer: Signer::from_seed(&[42u8; 32]),
         google: GoogleVerifier::new(vec![CLIENT.into()], static_google_keys()),
         google_desktop: Some(CodeExchange::new(token_url, CLIENT, DESKTOP_SECRET)),
+        google_android: None,
         dev_login: false,
         dev_pages: false,
         usage_secret: None,
@@ -809,4 +816,34 @@ async fn desktop_code_google_unreachable() {
         )
         .await;
     assert_eq!((st, s(&e, "error").as_str()), (503, "google_unavailable"));
+}
+
+/// Android 앱은 계정 서버에서 웹 클라이언트 ID를 받아 Credential Manager에 넘기고,
+/// 받은 ID 토큰(`aud` = 웹 클라이언트)을 `POST /v1/auth/google`로 낸다 (F35).
+#[tokio::test]
+async fn android_client_id_config() {
+    let srv = start(Store::memory(), false).await;
+    let (st, e) = srv.get_auth("/v1/auth/google/android", None).await;
+    assert_eq!(
+        (st, s(&e, "error").as_str()),
+        (404, "android_login_disabled")
+    );
+
+    let srv = serve(AppState {
+        store: Store::memory(),
+        signer: Signer::from_seed(&[42u8; 32]),
+        google: GoogleVerifier::new(vec![CLIENT.into()], static_google_keys()),
+        google_desktop: None,
+        google_android: Some(CLIENT.into()),
+        dev_login: false,
+        dev_pages: false,
+        usage_secret: None,
+    })
+    .await;
+    let (st, v) = srv.get_auth("/v1/auth/google/android", None).await;
+    assert_eq!((st, s(&v, "client_id")), (200, CLIENT.to_string()));
+    // 그 클라이언트로 발급된 ID 토큰으로 로그인된다
+    let (st, v) = srv.google_login(good_token(&new_sub())).await;
+    assert_eq!(st, 200, "{v}");
+    assert!(!s(&v, "refresh_token").is_empty());
 }

@@ -675,6 +675,7 @@ mod tests {
             signer: clip_ferry_account::tokens::Signer::from_seed(&[3u8; 32]),
             google: GoogleVerifier::new(vec![], KeySource::Static(Default::default())),
             google_desktop: None,
+            google_android: None,
             dev_login: true,
             dev_pages: false,
             usage_secret: None,
