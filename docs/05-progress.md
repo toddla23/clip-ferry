@@ -62,6 +62,7 @@
 
 새 항목을 위에 추가한다. 형식: `YYYY-MM-DD F00 — 한 줄`
 
+- 2026-11-08 F37 — 계정 서버 `POST /v1/link/ticket`(참여 확인서, 접속 토큰 키로 서명), 코어 `link`(계정 채널 `HKDF(user_id)`, 확인서 확인)·봉인 후 공개 페어링(`PairCommit`·`PairReveal`, SAS에 두 nonce)·`start_link_invite`/`start_link_join`·`Session::set_account_link`/`on_link_request`, 데스크톱(마법사 버튼·홈 화면 요청 카드·알림), FFI·Android(첫 화면 버튼·요청 카드·알림 채널). 03-protocol 4.4, D-022. 테스트: 코어 +10(중간자면 숫자 다름), 계정 +4, 릴레이 통합 3, 데스크톱 +1, FFI +3. `assembleDebug` 성공. 확인 문서 `todo/F37-확인.md`. 진행중
 - 2026-11-08 F37 — 시작 (브랜치 `f37-account-link`). 설계 합의: 계정 채널 + 계정 서버 서명 참여 확인서 + 키 봉인 후 공개(D-022)
 - 2026-11-08 F35 — PR #30 CI 통과·머지. 완료
 - 2026-11-08 F35 — 실기기 확인(`todo/F35-확인.md` 0~6) 전부 통과. 폰 앱이 Releases 배포 APK(versionCode 4)라 `installDebug` 불가 → 배포 키 release 빌드(versionCode 5)로 업데이트, 배포 키 SHA-1용 Android 클라이언트 추가. 확인대기

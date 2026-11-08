@@ -516,7 +516,8 @@ CLI 명령 예시는 `cf` = `cargo run -q -p clip-ferry-cli --` 의 줄임이다
 - **완료 조건**
   - [ ] 계정 서버가 그룹 키를 볼 수 없음(서버를 지나는 것은 공개키·이름뿐)을 테스트로 확인
   - [ ] 다른 계정에서 온 요청 거부
-- **사용자 확인 방법**: 구현 때 작성
+- 구현 메모(D-022, 03-protocol 4.4): 계정 서버 `POST /v1/link/ticket`(참여 확인서). 코어 `link`(계정 채널·확인서 확인), `pairing` 봉인 후 공개(`PairCommit`·`PairReveal`, `PairOffer.nonce`), `pair_flow::start_link_invite`·`start_link_join`, `Session::set_account_link` + `EventSink::on_link_request`. 데스크톱: 마법사 `이 계정의 다른 기기로 연결`, 홈 화면 `새 기기 연결 요청` 카드(연결·무시)·시스템 알림. Android: 첫 화면 같은 버튼, 메인 화면 카드, 알림(`기기 연결 요청` 채널). 테스트: 중간자(비밀을 아는 서버)가 끼면 양쪽 숫자가 다름, 위조·다른 계정 확인서 거부
+- **사용자 확인 방법**: `todo/F37-확인.md` (Pi 계정 서버 + PC 앱 + 폰, 실제 구글 로그인)
 
 ## F38. 운영자 통계
 
