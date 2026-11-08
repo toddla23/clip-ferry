@@ -974,6 +974,7 @@ name = "clip-ferry-ffi"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "base64 0.22.1",
  "clip-ferry-account",
  "clip-ferry-core",
  "clip-ferry-relay",

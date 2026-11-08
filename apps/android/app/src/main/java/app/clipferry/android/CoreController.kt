@@ -84,6 +84,8 @@ data class UiState(
     val loginMessage: String? = null,
     /** 릴레이가 접속 토큰을 받지 않았다. 다시 연결되면 사라진다. */
     val authRejected: Boolean = false,
+    /** 같은 계정의 새 기기가 보낸 참여 요청(기기 이름, F37). 연결·무시를 고르면 사라진다. */
+    val linkRequest: String? = null,
 ) {
     /** 그룹이 있다(제거된 그룹 포함). 없으면 첫 실행 화면을 보여 준다. */
     val hasGroup: Boolean get() = status?.epoch != null
@@ -108,6 +110,10 @@ object CoreController : CoreEvents {
     /** 참여가 끝나면 이 주소를 릴레이 설정으로 저장한다(QR에 들어 있던 주소). */
     @Volatile
     private var joinRelay: String? = null
+
+    /** 지금 참여가 계정 연결(F37)로 진행 중인가 (안내 문구가 다르다). */
+    @Volatile
+    private var linkJoin = false
 
     private val mutableState = MutableStateFlow(UiState())
     val state: StateFlow<UiState> = mutableState
@@ -344,6 +350,7 @@ object CoreController : CoreEvents {
         val c = ensureOpen()
         withContext(Dispatchers.IO) { c.logout() }
         GoogleLogin.clear(appContext)
+        LinkNotice.clear(appContext)
         mutableState.update {
             it.copy(
                 account = null,
@@ -352,6 +359,7 @@ object CoreController : CoreEvents {
                 pairing = null,
                 loginMessage = null,
                 authRejected = false,
+                linkRequest = null,
             )
         }
         refresh()
@@ -423,11 +431,68 @@ object CoreController : CoreEvents {
         refresh()
     }
 
+    // ------------------------------------------------------- 계정 연결 (F37)
+
+    /**
+     * 같은 계정으로 로그인한 다른 기기에 참여를 요청한다(QR·코드 없이). 기기가 없으면 [name]으로 만든다.
+     * 계정 서버에서 참여 확인서를 받으므로 작업 스레드에서 부른다. 실패하면 이유를 돌려준다.
+     */
+    fun startLinkJoin(name: String): String? = guard {
+        val c = ensureOpen()
+        synchronized(this) { ensureDevice(c, name) }
+        linkJoin = true
+        mutableState.update {
+            it.copy(
+                pairing = PairUi(
+                    PairKind.JOIN,
+                    PairPhase.CONNECTING,
+                    message = "계정 서버에서 확인서를 받는 중입니다",
+                ),
+            )
+        }
+        try {
+            c.startLinkJoin(settings.relayUrl, pairListener)
+            joinRelay = settings.relayUrl
+        } catch (e: Exception) {
+            linkJoin = false
+            mutableState.update { it.copy(pairing = null) }
+            throw e
+        }
+        refresh()
+    }
+
+    /** 새 기기의 참여 요청에 응한다: 확인 숫자를 맞춰 보는 화면으로 간다. */
+    @Synchronized
+    fun acceptLinkRequest(): String? = guard {
+        val c = ensureOpen()
+        val peer = mutableState.value.linkRequest
+        LinkNotice.clear(appContext)
+        mutableState.update { it.copy(linkRequest = null) }
+        c.acceptLinkRequest(settings.relayUrl, pairListener)
+        mutableState.update {
+            it.copy(
+                pairing = PairUi(
+                    kind = PairKind.INVITE,
+                    phase = PairPhase.WAITING,
+                    peerName = peer,
+                    message = "새 기기의 응답을 기다리는 중입니다",
+                ),
+            )
+        }
+    }
+
+    fun dismissLinkRequest() {
+        client?.dismissLinkRequest()
+        LinkNotice.clear(appContext)
+        mutableState.update { it.copy(linkRequest = null) }
+    }
+
     /** 페어링 화면을 닫는다(진행 중이면 취소). */
     @Synchronized
     fun closePairing() {
         client?.cancelPairing()
         joinRelay = null
+        linkJoin = false
         mutableState.update { it.copy(pairing = null) }
         refresh()
     }
@@ -437,7 +502,14 @@ object CoreController : CoreEvents {
         override fun onPairEvent(event: PairEvent) {
             when (event) {
                 is PairEvent.Connected -> updatePairing {
-                    it.copy(message = "초대한 기기의 응답을 기다리는 중입니다")
+                    it.copy(
+                        message = if (linkJoin) {
+                            "같은 계정의 다른 기기에서 '연결'을 눌러 주기를 기다리는 중입니다. " +
+                                "그 기기에서 clip-ferry가 켜져 있어야 합니다"
+                        } else {
+                            "초대한 기기의 응답을 기다리는 중입니다"
+                        },
+                    )
                 }
                 is PairEvent.Request -> updatePairing {
                     it.copy(phase = PairPhase.REQUEST, peerName = event.peerName, sas = event.sas)
@@ -472,6 +544,7 @@ object CoreController : CoreEvents {
                         mutableState.update { it.copy(relayUrl = relay) }
                     }
                     joinRelay = null
+                    linkJoin = false
                     mutableState.update { it.copy(pairing = null) }
                     refresh()
                     startService()
@@ -553,6 +626,14 @@ object CoreController : CoreEvents {
 
     override fun onImage(fromName: String, mime: String, bytes: ByteArray) {
         ReceivedClips.onImage(fromName, mime, bytes)
+    }
+
+    /** 같은 계정의 새 기기가 연결을 요청했다(F37). 앱 화면의 카드와 알림으로 알린다. */
+    override fun onLinkRequest(peerName: String) {
+        // 다른 페어링 중에는 받지 않는다(새 기기가 다시 보내면 그때 보인다).
+        if (mutableState.value.pairing != null) return
+        mutableState.update { it.copy(linkRequest = peerName) }
+        LinkNotice.show(appContext, peerName)
     }
 
     override fun onAuthRejected() {

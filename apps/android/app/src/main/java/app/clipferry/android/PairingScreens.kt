@@ -45,13 +45,20 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
+import androidx.compose.runtime.rememberCoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import uniffi.clip_ferry_ffi.DeviceEntry
 import uniffi.clip_ferry_ffi.QrMatrix
 
 // ------------------------------------------------------------ 첫 실행
 
-/** 그룹이 아직 없을 때: 이름을 정하고 참여(QR·코드)하거나 새 그룹을 만든다. */
+/**
+ * 그룹이 아직 없을 때: 이름을 정하고, 같은 계정의 다른 기기로 연결(F37)하거나
+ * 참여(QR·코드)하거나 새 그룹을 만든다.
+ */
 @Composable
 fun SetupScreen(
     state: UiState,
@@ -61,11 +68,13 @@ fun SetupScreen(
     onEnterCode: () -> Unit,
 ) {
     var error by remember { mutableStateOf<String?>(null) }
+    var linking by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
     val initialized = state.status != null
     Text("처음 설정", style = MaterialTheme.typography.headlineSmall)
     Text(
-        "데스크톱(또는 다른 폰)의 clip-ferry에서 '기기 추가'를 누른 뒤, " +
-            "QR을 스캔하거나 표시된 코드를 입력하세요.",
+        "같은 계정으로 쓰는 기기(PC 등)가 있으면 '이 계정의 다른 기기로 연결'을 누르세요. " +
+            "또는 그 기기에서 '기기 추가'를 누른 뒤 QR을 스캔하거나 코드를 입력하세요.",
     )
     Card(modifier = Modifier.fillMaxWidth()) {
         Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -83,7 +92,19 @@ fun SetupScreen(
             }
         }
     }
-    Button(onClick = onScan, modifier = Modifier.fillMaxWidth()) { Text("QR로 참여") }
+    Button(
+        onClick = {
+            linking = true
+            error = null
+            scope.launch {
+                error = withContext(Dispatchers.IO) { CoreController.startLinkJoin(name) }
+                linking = false
+            }
+        },
+        enabled = !linking,
+        modifier = Modifier.fillMaxWidth(),
+    ) { Text("이 계정의 다른 기기로 연결") }
+    OutlinedButton(onClick = onScan, modifier = Modifier.fillMaxWidth()) { Text("QR로 참여") }
     OutlinedButton(onClick = onEnterCode, modifier = Modifier.fillMaxWidth()) {
         Text("코드 입력으로 참여")
     }
@@ -215,6 +236,15 @@ fun PairingScreen(pairing: PairUi) {
 @Composable
 private fun InviteContent(p: PairUi) {
     Text("기기 추가", style = MaterialTheme.typography.headlineSmall)
+    // 계정 연결(F37): QR·코드 없이 새 기기의 응답을 기다린다.
+    if (p.textCode == null && (p.phase == PairPhase.WAITING || p.phase == PairPhase.CONNECTING)) {
+        Text("'${p.peerName}' 기기에 연결하는 중입니다.", style = MaterialTheme.typography.titleMedium)
+        p.message?.let { Text(it) }
+        OutlinedButton(onClick = CoreController::closePairing, modifier = Modifier.fillMaxWidth()) {
+            Text("취소")
+        }
+        return
+    }
     when (p.phase) {
         PairPhase.WAITING, PairPhase.CONNECTING -> {
             Text("새 기기의 clip-ferry에서 'QR로 참여'로 스캔하거나 아래 코드를 입력하세요.")
@@ -260,9 +290,11 @@ private fun InviteContent(p: PairUi) {
                 Text("닫기")
             }
         }
-        PairPhase.FAILED -> Failed(p.message, onRetry = {
-            CoreController.closePairing()
-            CoreController.startInvite()
+        PairPhase.FAILED -> Failed(p.message, onRetry = if (p.textCode == null) null else {
+            {
+                CoreController.closePairing()
+                CoreController.startInvite()
+            }
         })
     }
 }
@@ -273,10 +305,12 @@ private fun JoinContent(p: PairUi) {
     when (p.phase) {
         PairPhase.CONNECTING -> {
             Text(p.message ?: "릴레이에 연결하는 중입니다")
-            Text(
-                "초대한 기기의 '기기 추가' 화면이 열려 있어야 합니다.",
-                style = MaterialTheme.typography.bodySmall,
-            )
+            if (p.message?.contains("같은 계정") != true) {
+                Text(
+                    "초대한 기기의 '기기 추가' 화면이 열려 있어야 합니다.",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
             OutlinedButton(onClick = CoreController::closePairing, modifier = Modifier.fillMaxWidth()) {
                 Text("취소")
             }

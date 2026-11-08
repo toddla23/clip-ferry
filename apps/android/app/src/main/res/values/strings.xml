@@ -15,5 +15,8 @@
     <string name="process_text_label">PC로 보내기</string>
     <string name="received_channel_name">받은 클립보드</string>
     <string name="received_channel_description">다른 기기에서 받은 내용을 클립보드에 넣었을 때 보이는 알림입니다</string>
+    <string name="link_channel_name">기기 연결 요청</string>
+    <string name="link_channel_description">같은 계정으로 로그인한 새 기기가 그룹에 들어오려고 할 때 보이는 알림입니다</string>
+    <string name="link_notice_text">새 기기 \'%1$s\'이(가) 연결을 요청합니다. 눌러서 확인하세요</string>
     <string name="notif_removed">그룹에서 제거됨 — 다시 페어링하세요</string>
 </resources>
