@@ -2,7 +2,8 @@ import { useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type { AppView } from "./types";
 
-// 첫 실행: 기기 이름을 정하고 새 그룹을 만들거나 초대 코드로 기존 그룹에 참여한다.
+// 첫 실행: 기기 이름을 정하고, 같은 계정의 다른 기기로 연결하거나(F37),
+// 새 그룹을 만들거나, 초대 코드로 기존 그룹에 참여한다.
 export default function Wizard({ view }: { view: AppView }) {
   // 기기가 이미 만들어져 있으면(참여가 중간에 끊긴 경우) 이름은 그대로 쓴다.
   const fixedName = view.deviceName !== "";
@@ -30,7 +31,8 @@ export default function Wizard({ view }: { view: AppView }) {
     <main>
       <h1>clip-ferry 시작하기</h1>
       <p className="note">
-        이 기기의 이름을 정하고, 새 그룹을 만들거나 이미 쓰는 기기의 초대 코드로 참여하세요.
+        이 기기의 이름을 정하세요. 같은 계정으로 쓰는 기기가 있으면 그 기기로 연결하고, 처음이면 새
+        그룹을 만드세요.
       </p>
 
       <label>
@@ -47,6 +49,14 @@ export default function Wizard({ view }: { view: AppView }) {
       {mode === "choose" ? (
         <div className="stack">
           <button
+            data-testid="link-join"
+            disabled={!nameOk || busy}
+            onClick={() => run("start_link_join", { name })}
+          >
+            이 계정의 다른 기기로 연결
+          </button>
+          <button
+            className="secondary"
             data-testid="new-group"
             disabled={!nameOk || busy}
             onClick={() => run("create_group", { name })}

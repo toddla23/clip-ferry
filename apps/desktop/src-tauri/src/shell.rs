@@ -8,6 +8,7 @@ use std::sync::{Arc, Mutex, Weak};
 
 use clip_ferry_core::api::{Clip, ClipFerry, Config, Error, GroupHealth, ImageClip};
 use clip_ferry_core::crypto::DeviceId;
+use clip_ferry_core::link::{AccountLink, LinkRequestInfo};
 use clip_ferry_core::pair_flow::{self, InviteFlow, InviteUpdate, JoinFlow, JoinUpdate};
 use clip_ferry_core::session::{ConnectionStatus, EventSink, Session};
 use clip_ferry_core::store::SecretStore;
@@ -22,7 +23,7 @@ use crate::imgcodec;
 use crate::settings::{self, Settings};
 use crate::sysclip::SystemClipboard;
 use crate::tray;
-use crate::view::{self, AppView, Connection, PairKind, PairPhase, PairingView};
+use crate::view::{self, AppView, Connection, LinkRequestView, PairKind, PairPhase, PairingView};
 
 /// 진행 중인 페어링 작업. 드롭하면 멈춘다.
 enum Flow {
@@ -36,6 +37,8 @@ struct Pairing {
     id: u64,
     view: PairingView,
     flow: Option<Flow>,
+    /// 계정 연결(F37)로 진행 중
+    via_account: bool,
 }
 
 struct Inner {
@@ -59,6 +62,10 @@ struct Inner {
     session: Option<Arc<Session>>,
     pairing: Option<Pairing>,
     next_pairing_id: u64,
+    /// 계정 채널 정보(F37). 세션을 시작할 때 계정 서버에서 받는다.
+    account_link: Option<AccountLink>,
+    /// 같은 계정의 새 기기가 보낸 참여 요청 (사용자가 연결·무시를 고르기 전)
+    link_request: Option<LinkRequestInfo>,
 }
 
 pub struct Shell {
@@ -149,6 +156,12 @@ impl EventSink for Sink {
         self.refresh();
     }
 
+    fn on_link_request(&self, request: LinkRequestInfo) {
+        if let Some(shell) = self.0.upgrade() {
+            shell.on_link_request(request);
+        }
+    }
+
     fn on_presence(&self, online: Vec<DeviceId>) {
         if let Some(shell) = self.0.upgrade() {
             shell.inner.lock().unwrap().online =
@@ -212,6 +225,8 @@ impl Shell {
                 session: None,
                 pairing: None,
                 next_pairing_id: 1,
+                account_link: None,
+                link_request: None,
             }),
         }))
     }
@@ -369,7 +384,10 @@ impl Shell {
             let sink = Arc::new(Sink(Arc::downgrade(self)));
             match self.app.start_session(&inner.relay_url, config, sink) {
                 Ok(session) => {
-                    inner.session = Some(Arc::new(session));
+                    let session = Arc::new(session);
+                    session.set_account_link(inner.account_link.clone());
+                    self.listen_account(&session);
+                    inner.session = Some(session);
                     inner.connection = Connection::Reconnecting;
                     inner.error = None;
                 }
@@ -547,6 +565,8 @@ impl Shell {
             inner.connection = Connection::Stopped;
             inner.auth_rejected = false;
             inner.login_message = message;
+            inner.account_link = None;
+            inner.link_request = None;
             (inner.session.take(), inner.pairing.take())
         };
         // 잠금을 놓은 뒤에 멈춘다.
@@ -689,6 +709,7 @@ impl Shell {
             id,
             view: PairingView::new(PairKind::Join, PairPhase::Connecting),
             flow: None,
+            via_account: false,
         });
         drop(old);
 
@@ -726,8 +747,19 @@ impl Shell {
     fn on_join_update(self: &Arc<Self>, id: u64, update: JoinUpdate) {
         match update {
             JoinUpdate::Connected => {
+                let via_account = self
+                    .inner
+                    .lock()
+                    .unwrap()
+                    .pairing
+                    .as_ref()
+                    .is_some_and(|p| p.id == id && p.via_account);
                 self.update_pairing(id, |v| {
-                    v.message = Some("초대한 기기의 응답을 기다리는 중입니다".into());
+                    v.message = Some(if via_account {
+                        "같은 계정의 다른 기기에서 연결을 눌러 주기를 기다리는 중입니다. 그 기기에서 clip-ferry가 켜져 있어야 합니다".into()
+                    } else {
+                        "초대한 기기의 응답을 기다리는 중입니다".into()
+                    });
                 });
             }
             JoinUpdate::WaitingApproval { inviter_name, sas } => {
@@ -780,10 +812,162 @@ impl Shell {
             id,
             view: pv,
             flow: Some(Flow::Invite(flow)),
+            via_account: false,
         });
         drop(old);
         self.publish();
         Ok(self.view())
+    }
+
+    // ------------------------------------------------------------ 계정 연결 (F37)
+
+    /// 세션이 계정 채널을 듣게 한다. 계정 서버에 닿지 않으면 잠시 뒤 다시 시도한다.
+    fn listen_account(self: &Arc<Self>, session: &Arc<Session>) {
+        if self.inner.lock().unwrap().account_link.is_some() {
+            return;
+        }
+        let weak = Arc::downgrade(self);
+        let target = Arc::downgrade(session);
+        tauri::async_runtime::spawn(async move {
+            loop {
+                let Some(shell) = weak.upgrade() else { return };
+                // 그 사이 세션이 바뀌었으면(다시 시작·로그아웃) 그만둔다.
+                let Some(session) = target.upgrade() else {
+                    return;
+                };
+                match shell.account.account_link().await {
+                    Ok(link) => {
+                        session.set_account_link(Some(link.clone()));
+                        shell.inner.lock().unwrap().account_link = Some(link);
+                        return;
+                    }
+                    Err(TokenError::SignedOut) => return,
+                    Err(TokenError::Unavailable) => {}
+                }
+                drop((shell, session));
+                tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+            }
+        });
+    }
+
+    fn on_link_request(&self, request: LinkRequestInfo) {
+        let name = request.name.clone();
+        {
+            let mut inner = self.inner.lock().unwrap();
+            // 다른 페어링을 하는 중에는 받지 않는다(새 기기가 다시 보내면 그때 보인다).
+            if inner.pairing.is_some() {
+                return;
+            }
+            inner.link_request = Some(request);
+        }
+        self.notify(&format!(
+            "새 기기 '{name}'이(가) 같은 계정으로 연결을 요청합니다. clip-ferry 창에서 확인하세요"
+        ));
+        self.publish();
+    }
+
+    /// 새 기기의 참여 요청에 응한다: 확인 숫자를 맞춰 보는 화면으로 간다.
+    pub fn accept_link_request(self: &Arc<Self>) -> Result<AppView, String> {
+        self.require_sign_in()?;
+        let (request, link, relay) = {
+            let mut inner = self.inner.lock().unwrap();
+            let request = inner
+                .link_request
+                .take()
+                .ok_or_else(|| "참여 요청이 없습니다".to_string())?;
+            let link = inner
+                .account_link
+                .clone()
+                .ok_or_else(|| "계정 정보를 아직 받지 못했습니다".to_string())?;
+            (request, link, inner.relay_url.clone())
+        };
+        if clip_ferry_core::api::now_ms() >= request.expires_at_ms {
+            self.publish();
+            return Err("참여 요청이 만료되었습니다. 새 기기에서 다시 시도하세요".into());
+        }
+        let id = self.new_pairing_id();
+        let weak = Arc::downgrade(self);
+        let flow = pair_flow::start_link_invite(
+            &self.app,
+            &relay,
+            self.transport_config(),
+            link.channel(),
+            &request,
+            move |update| {
+                if let Some(shell) = weak.upgrade() {
+                    shell.on_invite_update(id, update);
+                }
+            },
+        )
+        .map_err(|e| e.to_string())?;
+        let mut pv = PairingView::new(PairKind::Invite, PairPhase::Waiting);
+        pv.peer_name = Some(request.name);
+        pv.expires_at_ms = Some(flow.expires_at_ms);
+        pv.message = Some("새 기기의 응답을 기다리는 중입니다".into());
+        let old = self.inner.lock().unwrap().pairing.replace(Pairing {
+            id,
+            view: pv,
+            flow: Some(Flow::Invite(flow)),
+            via_account: true,
+        });
+        drop(old);
+        self.publish();
+        Ok(self.view())
+    }
+
+    pub fn dismiss_link_request(&self) -> AppView {
+        self.inner.lock().unwrap().link_request = None;
+        self.publish();
+        self.view()
+    }
+
+    /// 같은 계정으로 로그인한 다른 기기에 참여를 요청한다(QR·코드 없이).
+    pub async fn start_link_join(self: &Arc<Self>, name: &str) -> Result<AppView, String> {
+        self.ensure_device(name)?;
+        let (sign_pub, dh_pub, device_name) =
+            self.app.link_identity().map_err(|e| e.to_string())?;
+        let ticket = self
+            .account
+            .link_ticket(&sign_pub, &dh_pub, &device_name)
+            .await?;
+        let id = self.new_pairing_id();
+        let relay = self.inner.lock().unwrap().relay_url.clone();
+        let old = self.inner.lock().unwrap().pairing.replace(Pairing {
+            id,
+            view: PairingView::new(PairKind::Join, PairPhase::Connecting),
+            flow: None,
+            via_account: true,
+        });
+        drop(old);
+
+        let weak = Arc::downgrade(self);
+        let flow = pair_flow::start_link_join(
+            &self.app,
+            &relay,
+            self.transport_config(),
+            ticket,
+            move |update| {
+                if let Some(shell) = weak.upgrade() {
+                    shell.on_join_update(id, update);
+                }
+            },
+        );
+        match flow {
+            Ok(flow) => {
+                if let Some(p) = self.inner.lock().unwrap().pairing.as_mut() {
+                    if p.id == id {
+                        p.flow = Some(Flow::Join(flow));
+                    }
+                }
+                self.publish();
+                Ok(self.view())
+            }
+            Err(e) => {
+                self.take_pairing(id);
+                self.publish();
+                Err(e.to_string())
+            }
+        }
     }
 
     fn on_invite_update(&self, id: u64, update: InviteUpdate) {
@@ -849,7 +1033,7 @@ impl Shell {
     // ------------------------------------------------------------ 화면
 
     pub fn view(&self) -> AppView {
-        let (connection, relay_url, error, pairing, online, flags, login) = {
+        let (connection, relay_url, error, pairing, online, flags, login, link_request) = {
             let inner = self.inner.lock().unwrap();
             let error = inner.error.clone().or_else(|| {
                 inner.auth_rejected.then(|| {
@@ -874,10 +1058,19 @@ impl Shell {
                     inner.login_task.is_some(),
                     inner.login_message.clone(),
                 ),
+                inner
+                    .link_request
+                    .as_ref()
+                    .filter(|r| r.expires_at_ms > clip_ferry_core::api::now_ms())
+                    .map(|r| LinkRequestView {
+                        name: r.name.clone(),
+                        expires_at_ms: r.expires_at_ms,
+                    }),
             )
         };
         let mut view = view::build(&self.app, connection, &relay_url, error);
         view.pairing = pairing;
+        view.link_request = link_request;
         (
             view.send_enabled,
             view.receive_enabled,

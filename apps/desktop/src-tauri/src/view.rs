@@ -181,6 +181,15 @@ pub struct AppView {
     pub login_message: Option<String>,
     /// 개발용 로그인(이메일만) 칸을 보인다 (디버그 빌드)
     pub dev_login: bool,
+    /// 같은 계정의 새 기기가 보낸 참여 요청 (F37)
+    pub link_request: Option<LinkRequestView>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LinkRequestView {
+    pub name: String,
+    pub expires_at_ms: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]

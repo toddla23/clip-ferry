@@ -44,6 +44,28 @@ export default function Home({
 
       {view.error && <p className="warn">{view.error}</p>}
 
+      {view.linkRequest && (
+        <section data-testid="link-request">
+          <h2>새 기기 연결 요청</h2>
+          <p>
+            같은 계정으로 로그인한 <b>{view.linkRequest.name}</b> 기기가 이 그룹에 들어오려고 합니다.
+            연결을 누르면 양쪽 화면에 확인 숫자가 뜹니다.
+          </p>
+          <div className="row">
+            <button data-testid="link-accept" onClick={() => call("accept_link_request")}>
+              연결
+            </button>
+            <button
+              className="secondary"
+              data-testid="link-dismiss"
+              onClick={() => call("dismiss_link_request")}
+            >
+              무시
+            </button>
+          </div>
+        </section>
+      )}
+
       <section>
         <div className="row between">
           <h2>
