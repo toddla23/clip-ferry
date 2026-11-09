@@ -1033,6 +1033,7 @@ mod tests {
                 dev_login: true,
                 dev_pages: false,
                 usage_secret: None,
+                admin_emails: vec![],
             };
             let app = router(Arc::new(state));
             let url = rt.block_on(async {

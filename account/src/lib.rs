@@ -4,6 +4,7 @@
 //! 저장하는 것은 계정 기본정보·기기 목록·갱신 토큰 해시·일별 사용량뿐이다.
 //! 클립보드 내용과 그룹 키는 이 서버를 지나지 않는다.
 
+pub mod admin;
 pub mod api;
 pub mod google;
 pub mod link;

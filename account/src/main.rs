@@ -3,6 +3,7 @@ use std::time::Duration;
 
 use anyhow::Context;
 use clap::{Parser, Subcommand};
+use clip_ferry_account::admin::normalize_emails;
 use clip_ferry_account::api::{router, AppState};
 use clip_ferry_account::google::{
     CodeExchange, GoogleVerifier, KeySource, RemoteKeys, GOOGLE_JWKS_URL, GOOGLE_TOKEN_URL,
@@ -55,6 +56,9 @@ struct Args {
     /// 릴레이가 사용량을 보낼 때 쓰는 공유 비밀 (릴레이의 CF_RELAY_USAGE_SECRET과 같게). 없으면 받지 않는다
     #[arg(long, env = "CF_ACCOUNT_USAGE_SECRET", hide_env_values = true)]
     usage_secret: Option<String>,
+    /// 운영자 페이지 `/admin`에 들어올 수 있는 구글 계정 이메일 (쉼표로 여러 개, F38). 없으면 열지 않는다
+    #[arg(long, env = "CF_ACCOUNT_ADMIN_EMAILS", value_delimiter = ',')]
+    admin_emails: Vec<String>,
 }
 
 #[derive(Subcommand, Debug)]
@@ -132,6 +136,13 @@ async fn main() -> anyhow::Result<()> {
             anyhow::bail!("CF_ACCOUNT_DATABASE_URL이 없습니다 (개발 중이면 --memory-store)")
         }
     };
+    let admin_emails = normalize_emails(&args.admin_emails);
+    if admin_emails.is_empty() {
+        tracing::info!("no admin emails; /admin is disabled");
+    } else {
+        // 이메일은 로그에 남기지 않는다
+        tracing::info!("/admin enabled for {} account(s)", admin_emails.len());
+    }
     if args.dev_login {
         tracing::warn!(
             "dev login enabled: anyone can create accounts without google (development only)"
@@ -150,6 +161,7 @@ async fn main() -> anyhow::Result<()> {
         dev_login: args.dev_login,
         dev_pages: args.dev_pages,
         usage_secret: args.usage_secret.clone().filter(|s| !s.is_empty()),
+        admin_emails,
     });
 
     // 만료된 갱신 토큰 정리 (한 시간마다)

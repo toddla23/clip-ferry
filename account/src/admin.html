@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex, nofollow">
+  <title>clip-ferry 운영자</title>
+  <style>
+    :root {
+      --bg: #f6f6f8; --card: #ffffff; --text: #1d1d24; --muted: #6b6b78;
+      --line: #e3e3ea; --accent: #5b4bb7; --accent-soft: #e9e5fb; --bad: #b3261e;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #16161b; --card: #202027; --text: #ececf1; --muted: #9a9aa8;
+        --line: #33333d; --accent: #b3a6ff; --accent-soft: #2e2a48; --bad: #ff8a80;
+      }
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; background: var(--bg); color: var(--text);
+      font: 15px/1.5 system-ui, -apple-system, "Segoe UI", "Malgun Gothic", sans-serif;
+    }
+    main { max-width: 1040px; margin: 0 auto; padding: 24px 16px 64px; }
+    header { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+    h1 { font-size: 22px; margin: 0; }
+    h2 { font-size: 16px; margin: 0 0 12px; }
+    .muted { color: var(--muted); font-size: 13px; }
+    .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 16px; margin-top: 16px; }
+    .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin-top: 16px; }
+    .tile { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; }
+    .tile .label { color: var(--muted); font-size: 13px; }
+    .tile .value { font-size: 28px; font-weight: 600; font-variant-numeric: tabular-nums; }
+    .scroll { overflow-x: auto; }
+    table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; }
+    th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+    th { color: var(--muted); font-weight: 500; font-size: 13px; }
+    td.num, th.num { text-align: right; }
+    tr.click { cursor: pointer; }
+    tr.click:hover td { background: var(--accent-soft); }
+    .bar { height: 8px; background: var(--accent); border-radius: 4px; min-width: 1px; }
+    .bar-cell { width: 30%; min-width: 80px; }
+    input[type=search] {
+      width: 100%; max-width: 360px; padding: 8px 10px; border-radius: 8px;
+      border: 1px solid var(--line); background: var(--bg); color: var(--text); font: inherit;
+    }
+    button {
+      font: inherit; padding: 6px 12px; border-radius: 8px; border: 1px solid var(--line);
+      background: var(--card); color: var(--text); cursor: pointer;
+    }
+    button:disabled { opacity: .5; cursor: default; }
+    .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    .error { color: var(--bad); }
+    .hidden { display: none !important; }
+    dl { display: grid; grid-template-columns: max-content 1fr; gap: 4px 16px; margin: 0; }
+    dt { color: var(--muted); }
+    dd { margin: 0; overflow-wrap: anywhere; }
+  </style>
+  <script src="/admin/admin.js"></script>
+  <script src="https://accounts.google.com/gsi/client" async></script>
+</head>
+<body>
+<main>
+  <header>
+    <div>
+      <h1>clip-ferry 운영자</h1>
+      <div class="muted">가입자·사용량 통계. 클립보드 내용은 서버에 없어 여기서도 볼 수 없습니다.</div>
+    </div>
+    <div class="row">
+      <span id="who" class="muted"></span>
+      <button id="logout" class="hidden" type="button">나가기</button>
+    </div>
+  </header>
+
+  <section id="login" class="card">
+    <h2>로그인</h2>
+    <p class="muted">허용 목록에 있는 구글 계정으로만 들어올 수 있습니다.</p>
+    <div id="g_id_onload" data-client_id="{{CLIENT_ID}}" data-callback="cfAdminGoogle" data-auto_prompt="false"></div>
+    <div class="g_id_signin" data-type="standard" data-text="signin_with" data-locale="ko"></div>
+    <p id="login-error" class="error"></p>
+  </section>
+
+  <div id="app" class="hidden">
+    <div class="tiles">
+      <div class="tile"><div class="label">가입자</div><div class="value" id="t-users">–</div></div>
+      <div class="tile"><div class="label">오늘 활성 (DAU)</div><div class="value" id="t-dau">–</div></div>
+      <div class="tile"><div class="label">30일 활성 (MAU)</div><div class="value" id="t-mau">–</div></div>
+      <div class="tile"><div class="label">30일 전송</div><div class="value" id="t-msgs">–</div></div>
+      <div class="tile"><div class="label">30일 전송량</div><div class="value" id="t-bytes">–</div></div>
+    </div>
+    <p class="muted">활성 = 그날 한 번이라도 전송한 계정. 날짜는 UTC 기준. <span id="updated"></span></p>
+
+    <section class="card">
+      <h2>플랫폼별 기기</h2>
+      <div class="scroll">
+        <table>
+          <thead><tr><th>플랫폼</th><th class="num">등록</th><th class="num">최근 30일 접속</th></tr></thead>
+          <tbody id="platforms"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>일별 (최근 30일)</h2>
+      <div class="scroll">
+        <table>
+          <thead><tr><th>날짜</th><th class="num">활성</th><th class="num">신규 가입</th><th class="num">전송</th><th class="num">바이트</th><th class="bar-cell">전송</th></tr></thead>
+          <tbody id="daily"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="card" id="users-card">
+      <h2>사용자</h2>
+      <div class="row">
+        <input id="q" type="search" placeholder="이메일·이름 검색" autocomplete="off">
+        <span id="users-count" class="muted"></span>
+      </div>
+      <div class="scroll">
+        <table>
+          <thead><tr><th>이메일</th><th>이름</th><th>로그인</th><th>가입</th><th class="num">기기</th><th class="num">30일 전송</th><th class="num">30일 바이트</th><th>마지막 전송</th></tr></thead>
+          <tbody id="users"></tbody>
+        </table>
+      </div>
+      <div class="row" style="margin-top:12px">
+        <button id="prev" type="button">이전</button>
+        <button id="next" type="button">다음</button>
+      </div>
+    </section>
+
+    <section class="card hidden" id="detail">
+      <div class="row" style="justify-content:space-between">
+        <h2 id="d-title">사용자</h2>
+        <button id="d-close" type="button">닫기</button>
+      </div>
+      <dl id="d-info"></dl>
+      <h2 style="margin-top:16px">기기</h2>
+      <div class="scroll">
+        <table>
+          <thead><tr><th>이름</th><th>플랫폼</th><th>등록</th><th>마지막 접속</th></tr></thead>
+          <tbody id="d-devices"></tbody>
+        </table>
+      </div>
+      <h2 style="margin-top:16px">사용량 (최근 90일)</h2>
+      <div class="scroll">
+        <table>
+          <thead><tr><th>날짜</th><th class="num">전송</th><th class="num">바이트</th></tr></thead>
+          <tbody id="d-usage"></tbody>
+        </table>
+      </div>
+    </section>
+    <p id="app-error" class="error"></p>
+  </div>
+</main>
+</body>
+</html>
