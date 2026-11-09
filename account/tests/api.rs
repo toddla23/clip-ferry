@@ -1247,3 +1247,164 @@ async fn admin_page_is_locked_down() {
         "값은 textContent로만 넣는다"
     );
 }
+
+// ---------------------------------------------------------------- 계정 삭제 (F39)
+
+impl Server {
+    async fn delete_me(&self, token: Option<&str>) -> u16 {
+        let mut req = self.http.delete(format!("{}/v1/me", self.base));
+        if let Some(t) = token {
+            req = req.bearer_auth(t);
+        }
+        req.send().await.unwrap().status().as_u16()
+    }
+}
+
+#[tokio::test]
+async fn delete_account_removes_every_row() {
+    for (name, store) in stores().await {
+        let srv = start(store, false).await;
+        let sub = new_sub();
+        let (_, first) = srv.google_login(good_token(&sub)).await;
+        let user_id = s(&first["user"], "id");
+        let access = s(&first, "access_token");
+        // 같은 계정의 다른 기기(다른 로그인)
+        let (_, second) = srv.google_login(good_token(&sub)).await;
+        assert_eq!(second["user"]["id"], user_id.as_str());
+        let device = clip_ferry_account::random_id();
+        assert_eq!(
+            srv.put_device(&access, &device, "내 PC", "windows").await.0,
+            200
+        );
+        let r = srv
+            .http
+            .post(format!("{}/internal/usage", srv.base))
+            .bearer_auth(USAGE_SECRET)
+            .json(&json!({ "entries": [{ "user_id": user_id, "messages": 2, "bytes": 10 }] }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status().as_u16(), 200);
+        let rows = srv.state.store.rows_of(&user_id).await.unwrap();
+        assert_eq!(rows, [1, 1, 2, 1], "{name}: 지우기 전에는 표마다 행이 있다");
+
+        // 토큰 없이는 못 지운다
+        assert_eq!(srv.delete_me(None).await, 401, "{name}");
+        assert_eq!(srv.delete_me(Some("x.y.z")).await, 401, "{name}");
+
+        assert_eq!(srv.delete_me(Some(&access)).await, 204, "{name}");
+        assert_eq!(
+            srv.state.store.rows_of(&user_id).await.unwrap(),
+            [0, 0, 0, 0],
+            "{name}: 어느 표에도 그 계정의 행이 남지 않는다"
+        );
+
+        // 같은 요청이 다시 와도 204
+        assert_eq!(srv.delete_me(Some(&access)).await, 204, "{name}");
+
+        // 남은 접속 토큰으로는 계정 API를 못 쓴다
+        assert_eq!(srv.get_auth("/v1/me", Some(&access)).await.0, 401, "{name}");
+        assert_eq!(
+            srv.put_device(&access, &device, "내 PC", "windows").await.0,
+            401,
+            "{name}"
+        );
+        // 두 로그인 모두 갱신 실패 → 앱은 로그아웃된다 (다시 연결할 새 접속 토큰을 못 받는다)
+        for login in [&first, &second] {
+            let (st, body) = srv
+                .post(
+                    "/v1/auth/refresh",
+                    json!({ "refresh_token": s(login, "refresh_token") }),
+                )
+                .await;
+            assert_eq!(st, 401, "{name}: {body}");
+        }
+        // 릴레이가 늦게 보낸 사용량도 다시 생기지 않는다
+        let r = srv
+            .http
+            .post(format!("{}/internal/usage", srv.base))
+            .bearer_auth(USAGE_SECRET)
+            .json(&json!({ "entries": [{ "user_id": user_id, "messages": 1, "bytes": 1 }] }))
+            .send()
+            .await
+            .unwrap();
+        let v: Value = r.json().await.unwrap();
+        assert_eq!(v["accepted"], 0, "{name}");
+        assert_eq!(
+            srv.state.store.rows_of(&user_id).await.unwrap(),
+            [0, 0, 0, 0]
+        );
+
+        // 같은 구글 계정으로 다시 로그인하면 새 계정이다 (기기·사용량 없음)
+        let (st, again) = srv.google_login(good_token(&sub)).await;
+        assert_eq!(st, 200, "{name}");
+        assert_ne!(again["user"]["id"], user_id.as_str(), "{name}");
+        let (_, me) = srv
+            .get_auth("/v1/me", Some(&s(&again, "access_token")))
+            .await;
+        assert_eq!(me["devices"].as_array().unwrap().len(), 0, "{name}");
+        assert_eq!(me["usage"].as_array().unwrap().len(), 0, "{name}");
+    }
+}
+
+#[tokio::test]
+async fn deleting_one_account_leaves_others() {
+    for (name, store) in stores().await {
+        let srv = start(store, false).await;
+        let (_, a) = srv.google_login(good_token(&new_sub())).await;
+        let (_, b) = srv.google_login(good_token(&new_sub())).await;
+        let b_id = s(&b["user"], "id");
+        srv.put_device(
+            &s(&b, "access_token"),
+            &clip_ferry_account::random_id(),
+            "B",
+            "android",
+        )
+        .await;
+        assert_eq!(srv.delete_me(Some(&s(&a, "access_token"))).await, 204);
+        assert_eq!(
+            srv.state.store.rows_of(&b_id).await.unwrap()[..3],
+            [1, 1, 1],
+            "{name}"
+        );
+        let (st, _) = srv
+            .post(
+                "/v1/auth/refresh",
+                json!({ "refresh_token": s(&b, "refresh_token") }),
+            )
+            .await;
+        assert_eq!(st, 200, "{name}");
+    }
+}
+
+#[tokio::test]
+async fn prune_drops_usage_older_than_retention() {
+    for (name, store) in stores().await {
+        let srv = start(store, false).await;
+        let (_, body) = srv.google_login(good_token(&new_sub())).await;
+        let user_id = s(&body["user"], "id");
+        let now = clip_ferry_account::now_ms();
+        let today = (now / 86_400_000) as i32;
+        let keep = today - clip_ferry_account::store::USAGE_RETENTION_DAYS + 1;
+        let drop = today - clip_ferry_account::store::USAGE_RETENTION_DAYS;
+        for day in [drop, keep, today] {
+            srv.state
+                .store
+                .add_usage(day, &[(user_id.clone(), 1, 1)])
+                .await
+                .unwrap();
+        }
+        let (_, usage) = srv.state.store.prune(now).await.unwrap();
+        assert!(usage >= 1, "{name}");
+        let days: Vec<i32> = srv
+            .state
+            .store
+            .usage(&user_id)
+            .await
+            .unwrap()
+            .iter()
+            .map(|d| d.day)
+            .collect();
+        assert_eq!(days, vec![keep, today], "{name}: 13개월 지난 날만 지운다");
+    }
+}

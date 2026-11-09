@@ -286,19 +286,53 @@ private fun DevLoginCard(busy: Boolean) {
     }
 }
 
-/** 계정: 로그인한 이메일·이름과 로그아웃. 로그아웃해도 그룹·페어링은 남는다. */
+/** 계정: 로그인한 이메일·이름, 로그아웃, 계정 삭제(F39). 로그아웃해도 그룹·페어링은 남는다. */
 @Composable
 private fun AccountCard(state: UiState) {
     val account = state.account ?: return
     val scope = rememberCoroutineScope()
     var confirm by remember { mutableStateOf(false) }
+    var confirmDelete by remember { mutableStateOf(false) }
+    var deleting by remember { mutableStateOf(false) }
+    var deleteError by remember { mutableStateOf<String?>(null) }
     Card(modifier = Modifier.fillMaxWidth()) {
         Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text("계정", style = MaterialTheme.typography.titleMedium)
             Text(if (account.name.isBlank()) account.email else "${account.name} · ${account.email}")
             Text("계정 서버: ${account.accountUrl}", style = MaterialTheme.typography.bodySmall)
-            OutlinedButton(onClick = { confirm = true }) { Text("로그아웃") }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(onClick = { confirm = true }, enabled = !deleting) { Text("로그아웃") }
+                OutlinedButton(onClick = { confirmDelete = true }, enabled = !deleting) {
+                    Text(if (deleting) "삭제하는 중…" else "계정 삭제")
+                }
+            }
+            deleteError?.let { Text(it, color = MaterialTheme.colorScheme.error) }
         }
+    }
+    if (confirmDelete) {
+        AlertDialog(
+            onDismissRequest = { confirmDelete = false },
+            title = { Text("계정을 삭제할까요?") },
+            text = {
+                Text(
+                    "서버에 있는 계정 정보·기기 목록·사용 기록이 바로 지워지고 되돌릴 수 없습니다. " +
+                        "같은 계정으로 로그인한 다른 기기도 곧 로그아웃됩니다. 이 기기의 그룹 정보도 지웁니다. " +
+                        "클립보드 내용은 원래 서버에 없습니다."
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    confirmDelete = false
+                    deleting = true
+                    deleteError = null
+                    scope.launch {
+                        deleteError = CoreController.deleteAccount()
+                        deleting = false
+                    }
+                }) { Text("계정 삭제", color = MaterialTheme.colorScheme.error) }
+            },
+            dismissButton = { TextButton(onClick = { confirmDelete = false }) { Text("취소") } },
+        )
     }
     if (confirm) {
         AlertDialog(

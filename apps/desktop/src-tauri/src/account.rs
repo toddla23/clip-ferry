@@ -389,6 +389,37 @@ impl Account {
         }
     }
 
+    /// 계정 삭제(F39): 계정 서버에서 계정·기기·사용량을 지우고(`DELETE /v1/me`) 이 기기의 로그인 정보도 지운다.
+    /// 서버가 지우지 못하면 아무것도 바꾸지 않고 이유를 돌려준다.
+    pub async fn delete_account(&self) -> Result<(), String> {
+        let url = self
+            .account_url()
+            .map_err(|_| "먼저 로그인하세요".to_string())?;
+        let token = self.token().await.map_err(|e| match e {
+            TokenError::SignedOut => {
+                "로그인이 만료되었습니다. 다시 로그인한 뒤 삭제하세요".to_string()
+            }
+            TokenError::Unavailable => format!("계정 서버({url})에 연결하지 못했습니다"),
+        })?;
+        let resp = self
+            .http
+            .delete(format!("{url}/v1/me"))
+            .bearer_auth(token)
+            .timeout(Duration::from_secs(15))
+            .send()
+            .await
+            .map_err(|_| format!("계정 서버({url})에 연결하지 못했습니다"))?;
+        match resp.status().as_u16() {
+            200 | 204 => {}
+            401 => return Err("로그인이 만료되었습니다. 다시 로그인한 뒤 삭제하세요".into()),
+            405 => return Err("계정 서버가 계정 삭제를 받지 않습니다 (예전 버전)".into()),
+            s => return Err(format!("계정 서버 오류 (HTTP {s})")),
+        }
+        let _one = self.one.lock().await;
+        self.forget();
+        Ok(())
+    }
+
     /// 구글 로그인. `open`은 시스템 브라우저로 주소를 연다. 끝날 때까지(최대 5분) 기다린다.
     pub async fn google_login(
         &self,
@@ -925,6 +956,27 @@ mod tests {
             .link_ticket(&keys.sign_public(), &keys.dh_public(), "새 PC")
             .await
             .is_err());
+    }
+
+    /// 계정 삭제(F39): 서버에서 지우고 이 기기의 로그인 정보도 지운다. 같은 계정의 다른 기기는 갱신에서 풀린다.
+    #[tokio::test]
+    async fn delete_account_signs_out_every_device() {
+        let url = account_server().await;
+        let store = MemorySecretStore::default();
+        let acc = Account::new(Box::new(store.clone()));
+        acc.dev_login(&url, "gone@test.dev").await.unwrap();
+        let other = Account::new(Box::new(MemorySecretStore::default()));
+        other.dev_login(&url, "gone@test.dev").await.unwrap();
+
+        acc.delete_account().await.unwrap();
+        assert!(!acc.is_signed_in());
+        assert!(store.get(KEY).is_none(), "보안 저장소에서도 지운다");
+        assert!(acc.delete_account().await.is_err(), "로그인 안 됨");
+
+        // 다른 기기: 접속 토큰을 새로 받으려 하면 로그아웃된다
+        other.data.lock().unwrap().access = None;
+        assert_eq!(other.token().await, Err(TokenError::SignedOut));
+        assert!(!other.is_signed_in());
     }
 
     #[tokio::test]

@@ -11,6 +11,7 @@
 //! | `POST /v1/auth/refresh` `{refresh_token}` | 새 접속·갱신 토큰 (옛 갱신 토큰은 못 쓴다) |
 //! | `POST /v1/auth/logout` `{refresh_token}` | 그 로그인의 갱신 토큰 무효화 |
 //! | `GET /v1/me` | 내 계정과 기기 (Bearer 접속 토큰) |
+//! | `DELETE /v1/me` | 계정 삭제: 계정·기기·갱신 토큰·사용량을 바로 지운다 (Bearer, F39) |
 //! | `PUT /v1/devices/{device_id}` `{name, platform}` | 기기 등록·갱신 (Bearer) |
 //! | `POST /v1/link/ticket` `{sign_pub, dh_pub, name}` | 계정 연결 참여 확인서 (Bearer, F37) |
 //! | `POST /internal/usage` `{entries: [{user_id, messages, bytes}]}` | 릴레이가 보내는 사용량 (Bearer 공유 비밀, F33) |
@@ -76,7 +77,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/v1/auth/google/android", get(google_android_config))
         .route("/v1/auth/refresh", post(auth_refresh))
         .route("/v1/auth/logout", post(auth_logout))
-        .route("/v1/me", get(me))
+        .route("/v1/me", get(me).delete(delete_me))
         .route("/v1/devices/:device_id", put(put_device))
         .route("/v1/link/ticket", post(link_ticket));
     if state.dev_login {
@@ -420,6 +421,17 @@ async fn me(State(s): State<Arc<AppState>>, headers: HeaderMap) -> ApiResult<Jso
         devices,
         usage,
     }))
+}
+
+/// 계정 삭제(F39). 이 계정의 모든 기기에서 로그인이 풀린다(갱신 토큰이 없어진다).
+/// 이미 받은 접속 토큰은 만료(최대 1시간)까지 릴레이 접속에 쓰일 수 있다(D-024).
+/// 같은 요청이 두 번 와도 204다.
+async fn delete_me(State(s): State<Arc<AppState>>, headers: HeaderMap) -> ApiResult<StatusCode> {
+    let user_id = bearer_user(&s, &headers)?;
+    if s.store.delete_user(&user_id).await? {
+        tracing::info!("account deleted");
+    }
+    Ok(StatusCode::NO_CONTENT)
 }
 
 #[derive(Deserialize)]

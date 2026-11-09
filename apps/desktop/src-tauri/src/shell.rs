@@ -560,6 +560,18 @@ impl Shell {
         self.view()
     }
 
+    /// 계정 삭제(F39): 계정 서버에서 계정을 지우고, 이 기기의 그룹 정보와 로그인 정보를 지운다.
+    /// 다른 기기의 그룹은 그대로다(그 기기들의 로그인은 다음 갱신 때 풀린다).
+    pub async fn delete_account(self: &Arc<Self>) -> Result<AppView, String> {
+        self.account.delete_account().await?;
+        self.signed_out(Some(
+            "계정을 삭제했습니다. 이 기기의 그룹 정보도 지웠습니다.".into(),
+        ));
+        // 계정은 이미 지워졌다. 그룹 정보를 지우지 못해도(기기를 만들기 전 등) 로그인 화면으로 간다.
+        let _ = self.leave_group();
+        Ok(self.view())
+    }
+
     /// 로그인하지 않은 상태로 돌아간다. 그룹은 그대로이고 다시 로그인하면 이어서 쓴다.
     fn signed_out(&self, message: Option<String>) {
         let (session, pairing) = {
