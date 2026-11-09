@@ -13,6 +13,9 @@ use sqlx::Row;
 /// 계정당 기기 수 한도
 pub const MAX_DEVICES: usize = 64;
 
+/// 일별 사용량 보관 일수(약 13개월, F39). 이보다 오래된 행은 `prune`이 지운다.
+pub const USAGE_RETENTION_DAYS: i32 = 396;
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct User {
     pub id: String,
@@ -337,22 +340,92 @@ impl Store {
         }
     }
 
-    /// 만료된 지 하루가 지난 갱신 토큰을 지운다. 지운 수를 돌려준다.
-    pub async fn prune(&self, now: i64) -> Result<u64> {
-        let cutoff = now - 24 * 60 * 60 * 1000;
+    /// 오래된 행을 지운다: 만료된 지 하루가 지난 갱신 토큰, 보관 기간(`USAGE_RETENTION_DAYS`)이
+    /// 지난 일별 사용량. 지운 (토큰 수, 사용량 행 수)를 돌려준다.
+    pub async fn prune(&self, now: i64) -> Result<(u64, u64)> {
+        let cutoff = now - DAY_MS;
+        let oldest_day = (now.div_euclid(DAY_MS) as i32) - USAGE_RETENTION_DAYS;
         match self {
             Store::Memory(m) => {
                 let mut g = m.lock();
-                let before = g.refresh.len();
+                let tokens = g.refresh.len();
                 g.refresh.retain(|_, r| r.expires_at >= cutoff);
-                Ok((before - g.refresh.len()) as u64)
+                let usage = g.usage.len();
+                g.usage.retain(|(_, day), _| *day > oldest_day);
+                Ok((
+                    (tokens - g.refresh.len()) as u64,
+                    (usage - g.usage.len()) as u64,
+                ))
             }
             Store::Maria(m) => {
-                let r = sqlx::query("DELETE FROM refresh_tokens WHERE expires_at_ms < ?")
+                let tokens = sqlx::query("DELETE FROM refresh_tokens WHERE expires_at_ms < ?")
                     .bind(cutoff)
                     .execute(&m.pool)
-                    .await?;
-                Ok(r.rows_affected())
+                    .await?
+                    .rows_affected();
+                let usage = sqlx::query("DELETE FROM usage_daily WHERE day <= ?")
+                    .bind(oldest_day)
+                    .execute(&m.pool)
+                    .await?
+                    .rows_affected();
+                Ok((tokens, usage))
+            }
+        }
+    }
+
+    /// 계정 삭제(F39): 계정과 그 계정의 기기·갱신 토큰·일별 사용량을 모두 지운다.
+    /// 없는 계정이면 `false`.
+    pub async fn delete_user(&self, user_id: &str) -> Result<bool> {
+        match self {
+            Store::Memory(m) => {
+                let mut g = m.lock();
+                let Some(u) = g.users.remove(user_id) else {
+                    return Ok(false);
+                };
+                g.by_sub.remove(&(u.provider, u.provider_sub));
+                g.devices.retain(|(id, _)| id != user_id);
+                g.refresh.retain(|_, r| r.user_id != user_id);
+                g.usage.retain(|(id, _), _| id != user_id);
+                Ok(true)
+            }
+            Store::Maria(m) => retry_deadlock(|| m.delete_user(user_id)).await,
+        }
+    }
+
+    /// 테스트용: 계정 ID로 남아 있는 행 수 (계정, 기기, 갱신 토큰, 일별 사용량).
+    #[doc(hidden)]
+    pub async fn rows_of(&self, user_id: &str) -> Result<[i64; 4]> {
+        match self {
+            Store::Memory(m) => {
+                let g = m.lock();
+                Ok([
+                    g.users.contains_key(user_id) as i64,
+                    g.devices.iter().filter(|(id, _)| id == user_id).count() as i64,
+                    g.refresh.values().filter(|r| r.user_id == user_id).count() as i64,
+                    g.usage.keys().filter(|(id, _)| id == user_id).count() as i64,
+                ])
+            }
+            Store::Maria(m) => {
+                let mut out = [0i64; 4];
+                for (i, table) in [
+                    ("users", "id"),
+                    ("devices", "user_id"),
+                    ("refresh_tokens", "user_id"),
+                    ("usage_daily", "user_id"),
+                ]
+                .iter()
+                .enumerate()
+                {
+                    out[i] = sqlx::query(&format!(
+                        "SELECT COUNT(*) AS n FROM {} WHERE {} = ?",
+                        table.0, table.1
+                    ))
+                    .bind(user_id)
+                    .fetch_one(&m.pool)
+                    .await?
+                    .try_get("n")?;
+                }
+                Ok(out)
             }
         }
     }
@@ -1086,6 +1159,24 @@ impl MariaStore {
             })
             .collect::<Result<_>>()?;
         Ok((total, users))
+    }
+
+    async fn delete_user(&self, user_id: &str) -> Result<bool> {
+        // 외래 키의 ON DELETE CASCADE에 기대지 않고 표마다 지운다(어느 표에도 남지 않게)
+        let mut tx = self.pool.begin().await?;
+        for table in ["usage_daily", "refresh_tokens", "devices"] {
+            sqlx::query(&format!("DELETE FROM {table} WHERE user_id = ?"))
+                .bind(user_id)
+                .execute(&mut *tx)
+                .await?;
+        }
+        let n = sqlx::query("DELETE FROM users WHERE id = ?")
+            .bind(user_id)
+            .execute(&mut *tx)
+            .await?
+            .rows_affected();
+        tx.commit().await?;
+        Ok(n > 0)
     }
 
     async fn revoke_family_of(&self, hash: &[u8; 32]) -> Result<()> {

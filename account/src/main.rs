@@ -164,14 +164,16 @@ async fn main() -> anyhow::Result<()> {
         admin_emails,
     });
 
-    // 만료된 갱신 토큰 정리 (한 시간마다)
+    // 만료된 갱신 토큰·보관 기간이 지난 사용량 정리 (한 시간마다)
     let pruner = state.clone();
     tokio::spawn(async move {
         let mut tick = tokio::time::interval(Duration::from_secs(60 * 60));
         loop {
             tick.tick().await;
             match pruner.store.prune(clip_ferry_account::now_ms()).await {
-                Ok(n) if n > 0 => tracing::info!("pruned {n} expired refresh tokens"),
+                Ok((tokens, usage)) if tokens + usage > 0 => {
+                    tracing::info!("pruned {tokens} expired refresh tokens, {usage} old usage rows")
+                }
                 Ok(_) => {}
                 Err(e) => tracing::warn!("prune failed: {e}"),
             }
