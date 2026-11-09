@@ -526,3 +526,191 @@ fn channel_id_type_is_opaque() {
     let group: ChannelId = a.connection().unwrap().channel_id;
     assert_ne!(inviter.invite().pair_channel(), group.0);
 }
+
+// ---------------------------------------------------------------- 계정 연결 (4.4, 봉인 후 공개)
+
+/// 봉인값 → Offer → 공개 → Offer(확인 숫자)까지 진행한다.
+fn committed_exchange(inviter: &mut Inviter, joiner: &mut Joiner, now: u64) -> (String, String) {
+    let commit = joiner.outgoing().expect("봉인값");
+    let InviterEvent::Reply(offer) = inviter.handle(&commit, now) else {
+        panic!("봉인값에 Offer로 답하지 않음");
+    };
+    let JoinerEvent::Offer { sas: sas_b, .. } = joiner.handle(&offer) else {
+        panic!("Joiner가 Offer를 받지 못함");
+    };
+    let reveal = joiner.outgoing().expect("공개");
+    let InviterEvent::Offer { sas: sas_a, .. } = inviter.handle(&reveal, now) else {
+        panic!("공개를 받고 확인 숫자를 내지 않음");
+    };
+    (sas_a, sas_b)
+}
+
+fn signed_ticket(
+    user: &str,
+    b: &ClipFerry,
+    expires: u64,
+) -> (crate::link::AccountLink, pb::LinkTicket) {
+    use ed25519_dalek::{Signer, SigningKey};
+    let server = SigningKey::from_bytes(&[9u8; 32]);
+    let (sign_pub, dh_pub, name) = b.link_identity().unwrap();
+    let msg = crate::link::ticket_message(user, &sign_pub, &dh_pub, &name, expires).unwrap();
+    let ticket = pb::LinkTicket {
+        user_id: user.into(),
+        sign_pub: sign_pub.to_vec(),
+        dh_pub: dh_pub.to_vec(),
+        name,
+        expires_at_ms: expires,
+        kid: "k".into(),
+        signature: server.sign(&msg).to_bytes().to_vec(),
+    };
+    let link = crate::link::AccountLink {
+        user_id: user.into(),
+        server_keys: vec![("k".into(), server.verifying_key().to_bytes())],
+    };
+    (link, ticket)
+}
+
+#[test]
+fn account_link_flow_joins_group() {
+    let (a, _da) = app("laptop", true);
+    let (b, _db) = app("new-phone", false);
+    let (link, ticket) = signed_ticket("user-1", &b, T0 + 60_000);
+
+    let (request_id, request) = crate::link::build_request(ticket);
+    let req = crate::link::parse_request(&request, &link, T0)
+        .unwrap()
+        .unwrap();
+    assert_eq!(req.name, "new-phone");
+    let (mut inviter, invite_msg) = a.create_link_invite(&req).unwrap();
+    // 다른 요청 ID로는 열리지 않는다
+    assert!(b.link_join(&invite_msg, &[0u8; 16]).unwrap().is_none());
+    let mut joiner = b.link_join(&invite_msg, &request_id).unwrap().unwrap();
+
+    let (sas_a, sas_b) = committed_exchange(&mut inviter, &mut joiner, T0);
+    assert_eq!(sas_a, sas_b);
+    assert_eq!(inviter.pending().unwrap().name, "new-phone");
+
+    let approval = a.approve_join(&mut inviter, T0).unwrap();
+    let JoinerEvent::Joined(joined) = joiner.handle(&approval.welcome) else {
+        panic!("참여가 완료되지 않음");
+    };
+    b.accept_join(joined).unwrap();
+    assert_eq!(
+        a.connection().unwrap().channel_id,
+        b.connection().unwrap().channel_id
+    );
+    assert_eq!(b.status().unwrap().member_count, 2);
+
+    // 이미 구성원인 기기의 요청에는 응하지 않는다
+    assert!(matches!(
+        a.create_link_invite(&req),
+        Err(Error::Pairing(PairingError::AlreadyMember))
+    ));
+    // 그룹이 생긴 뒤로는 계정 연결로 참여하지 않는다
+    assert!(matches!(
+        b.link_join(&invite_msg, &request_id),
+        Err(Error::GroupExists)
+    ));
+}
+
+#[test]
+fn committed_reveal_must_match_commitment() {
+    let (a, _da) = app("laptop", true);
+    let (b, _db) = app("new-phone", false);
+    let (c, _dc) = app("intruder", false);
+    let invite = Invite::generate(None);
+    let mut inviter =
+        Inviter::new_committed(invite.clone(), Identity::of(&a_keys(&a), "laptop"), T0);
+    let mut joiner_b = Joiner::new_committed(invite.clone(), a_keys(&b), "new-phone");
+    let mut joiner_c = Joiner::new_committed(invite.clone(), a_keys(&c), "intruder");
+
+    let InviterEvent::Reply(offer) = inviter.handle(&joiner_b.outgoing().unwrap(), T0) else {
+        panic!("Offer 없음");
+    };
+    joiner_b.handle(&offer);
+    joiner_c.handle(&offer);
+    // 봉인값을 보내지 않은 기기의 공개는 무시된다
+    assert_eq!(
+        inviter.handle(&joiner_c.outgoing().unwrap(), T0),
+        InviterEvent::None
+    );
+    assert!(inviter.pending().is_none());
+    // 봉인한 기기의 공개는 받는다
+    assert!(matches!(
+        inviter.handle(&joiner_b.outgoing().unwrap(), T0),
+        InviterEvent::Offer { .. }
+    ));
+    // QR 방식의 Hello는 계정 연결 초대에서 받지 않는다
+    let plain = Joiner::new(invite.clone(), a_keys(&c), "intruder");
+    assert_eq!(inviter.handle(&plain.hello(), T0), InviterEvent::None);
+}
+
+#[test]
+fn second_commitment_invalidates_invite() {
+    let (a, _da) = app("laptop", true);
+    let (b, _db) = app("new-phone", false);
+    let (c, _dc) = app("intruder", false);
+    let invite = Invite::generate(None);
+    let mut inviter =
+        Inviter::new_committed(invite.clone(), Identity::of(&a_keys(&a), "laptop"), T0);
+    let joiner_b = Joiner::new_committed(invite.clone(), a_keys(&b), "new-phone");
+    let joiner_c = Joiner::new_committed(invite.clone(), a_keys(&c), "intruder");
+
+    let commit_b = joiner_b.outgoing().unwrap();
+    assert!(matches!(
+        inviter.handle(&commit_b, T0),
+        InviterEvent::Reply(_)
+    ));
+    // 같은 봉인값의 재전송은 같은 응답
+    assert!(matches!(
+        inviter.handle(&commit_b, T0),
+        InviterEvent::Reply(_)
+    ));
+    assert_eq!(
+        inviter.handle(&joiner_c.outgoing().unwrap(), T0),
+        InviterEvent::Invalid(InviteProblem::SecondJoiner)
+    );
+}
+
+#[test]
+fn committed_joiner_needs_offer_nonce() {
+    let (a, _da) = app("laptop", true);
+    let (b, _db) = app("new-phone", false);
+    let invite = Invite::generate(None);
+    // QR 방식 초대한 쪽은 nonce 없는 Offer를 보낸다
+    let mut plain_inviter = Inviter::new(invite.clone(), Identity::of(&a_keys(&a), "laptop"), T0);
+    let plain_joiner = Joiner::new(invite.clone(), a_keys(&b), "new-phone");
+    let InviterEvent::Offer { payload, .. } = plain_inviter.handle(&plain_joiner.hello(), T0)
+    else {
+        panic!("Offer 없음");
+    };
+    let mut joiner = Joiner::new_committed(invite, a_keys(&b), "new-phone");
+    assert!(matches!(joiner.handle(&payload), JoinerEvent::None));
+}
+
+/// 초대 비밀을 아는 중간자(계정 서버)가 양쪽에 끼어들면 두 확인 숫자가 달라진다.
+/// (우연히 같을 확률은 100만분의 1이다.)
+#[test]
+fn man_in_the_middle_with_secret_gets_different_sas() {
+    let (a, _da) = app("laptop", true);
+    let (b, _db) = app("new-phone", false);
+    let (m, _dm) = app("server", false);
+    let invite = Invite::generate(None);
+    let mut inviter_a =
+        Inviter::new_committed(invite.clone(), Identity::of(&a_keys(&a), "laptop"), T0);
+    let mut joiner_b = Joiner::new_committed(invite.clone(), a_keys(&b), "new-phone");
+    // 중간자: B에게는 초대한 쪽, A에게는 참여하는 쪽으로 보인다
+    let mut fake_a =
+        Inviter::new_committed(invite.clone(), Identity::of(&a_keys(&m), "laptop"), T0);
+    let mut fake_b = Joiner::new_committed(invite, a_keys(&m), "new-phone");
+
+    let (sas_fake_a, sas_b) = committed_exchange(&mut fake_a, &mut joiner_b, T0);
+    let (sas_a, sas_fake_b) = committed_exchange(&mut inviter_a, &mut fake_b, T0);
+    assert_eq!(sas_fake_a, sas_b);
+    assert_eq!(sas_a, sas_fake_b);
+    assert_ne!(sas_a, sas_b, "중간자가 있으면 양쪽 숫자가 달라야 한다");
+}
+
+fn a_keys(app: &ClipFerry) -> DeviceKeys {
+    app.device_keys_for_test()
+}

@@ -232,6 +232,41 @@ A → 그룹  RosterUpdate (B 추가)
 
 첫 기기는 `group_key`, `epoch=1`, 자기만 있는 로스터를 만들고 채널을 구독한다.
 
+### 4.4 계정 연결 (F37, D-022)
+
+같은 계정으로 로그인한 새 기기 B가 QR·코드 없이 기존 기기 A에 참여를 요청한다. 초대 비밀이 계정 서버(와 릴레이)를 지나므로 **서버가 초대 비밀을 안다고 보고** 설계한다.
+
+**계정 채널**: `account_channel = HKDF(user_id, info="clip-ferry v1 account-channel")`. 로그인한 기기는 세션에서 이 채널도 구독한다(태그는 세션마다 무작위). 메시지는 봉인하지 않은 `LinkMessage`다.
+
+**참여 확인서** (`LinkTicket`): B는 계정 서버 `POST /v1/link/ticket {sign_pub, dh_pub, name}`(Bearer 접속 토큰)으로 받는다. 계정 서버는 접속 토큰과 같은 Ed25519 키로 서명한다(10분).
+
+```
+signature = Ed25519(계정 서버, "clip-ferry v1 link-ticket" ‖ u8 len ‖ user_id ‖ sign_pub ‖ dh_pub
+                    ‖ u8 len ‖ name ‖ u64_le expires_at_ms)
+```
+
+A는 `GET /v1/keys`의 공개키(`kid`로 고름)로 서명을, `user_id`가 내 계정인지, 만료를 확인한다. 하나라도 어긋나거나 이미 로스터에 있는 기기면 조용히 버린다. 요청 ID마다 사용자에게 한 번만 알린다.
+
+```
+B → 계정 채널  LinkRequest { request_id(16 무작위), ticket }        (응답이 올 때까지 3초마다)
+               A 화면에 "새 기기 연결 요청" → 사용자가 [연결]
+A → 계정 채널  LinkInvite { request_id, wrap_for(B.dh_pub, invite_secret) }  (B가 응답할 때까지 3초마다)
+이후 pair_channel(invite_secret)에서 봉인 후 공개 페어링:
+B → A  PairCommit  { commitment = SHA-256("clip-ferry v1 commit" ‖ sign_pub_B ‖ dh_pub_B ‖ nonce_B) }
+A → B  PairOffer   { sign_pub_A, dh_pub_A, name_A, nonce_A }
+B → A  PairReveal  { sign_pub_B, dh_pub_B, name_B, nonce_B }       (A는 commitment와 맞는지 확인)
+       양쪽 화면에 SAS:
+       SAS = u32_le(SHA-256("clip-ferry v1 sas commit" ‖ invite_secret ‖ sign_pub_A ‖ dh_pub_A
+                    ‖ sign_pub_B ‖ dh_pub_B ‖ nonce_A ‖ nonce_B)[0..4]) mod 1_000_000
+A → B  PairWelcome / PairReject, A → 그룹 RosterUpdate   (4.2와 같다)
+```
+
+- `nonce_A`, `nonce_B`는 무작위 32바이트. B는 `PairOffer`를 받은 뒤에야 키와 `nonce_B`를 공개하고, A의 `nonce_A`는 B의 봉인값을 받은 뒤에 나온다. 그래서 초대 비밀을 아는 중간자도 양쪽 숫자를 맞출 값을 미리 고를 수 없다(맞을 확률 100만분의 1). 4.2의 SAS는 비밀을 모르는 제3자만 막으므로 이 경로에는 쓰지 않는다.
+- 계정 연결 초대는 `PairHello`를 받지 않고, QR·코드 초대는 `PairCommit`·`PairReveal`을 받지 않는다. 다른 봉인값이 또 오면 초대를 무효화한다(4.2의 "다른 기기의 Hello"와 같다). 봉인값과 맞지 않는 공개는 무시한다.
+- B는 `request_id`가 내 것이고 `WrappedKey.device_id`가 나인 `LinkInvite`만 연다. 처음 온 것만 쓴다(같은 계정의 기기 여럿이 응해도 하나만 이어진다).
+- 다른 계정의 기기는 다른 계정 채널을 쓰고, 같은 채널에 올려도 확인서가 맞지 않아 버려진다. 계정 서버를 지나는 것은 공개키·이름·서명뿐이고 그룹 키는 없다.
+- QR·코드 페어링(4.1·4.2)은 그대로다(같은 계정이 아닐 때·계정 서버 장애 때).
+
 ---
 
 ## 5. 릴레이 프로토콜

@@ -48,6 +48,12 @@ export interface AppView {
   loginBusy: boolean;
   loginMessage: string | null;
   devLogin: boolean;
+  linkRequest: LinkRequestView | null;
+}
+
+export interface LinkRequestView {
+  name: string;
+  expiresAtMs: number;
 }
 
 export interface AccountView {

@@ -6,6 +6,7 @@
 
 pub mod api;
 pub mod google;
+pub mod link;
 pub mod store;
 pub mod tokens;
 

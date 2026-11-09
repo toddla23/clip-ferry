@@ -43,6 +43,21 @@ async fn start_invite(shell: State<'_, Arc<Shell>>) -> Result<AppView, String> {
 }
 
 #[tauri::command]
+async fn start_link_join(shell: State<'_, Arc<Shell>>, name: String) -> Result<AppView, String> {
+    shell.inner().start_link_join(&name).await
+}
+
+#[tauri::command]
+async fn accept_link_request(shell: State<'_, Arc<Shell>>) -> Result<AppView, String> {
+    shell.accept_link_request()
+}
+
+#[tauri::command]
+fn dismiss_link_request(shell: State<'_, Arc<Shell>>) -> AppView {
+    shell.dismiss_link_request()
+}
+
+#[tauri::command]
 fn decide_invite(shell: State<'_, Arc<Shell>>, approve: bool) {
     shell.decide_invite(approve);
 }
@@ -133,6 +148,9 @@ fn main() {
             create_group,
             start_join,
             start_invite,
+            start_link_join,
+            accept_link_request,
+            dismiss_link_request,
             decide_invite,
             close_pairing,
             rename_device,

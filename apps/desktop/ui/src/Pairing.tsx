@@ -99,6 +99,21 @@ export function InviteScreen({ p }: { p: PairingView }) {
     );
   }
 
+  // 계정 연결(F37): QR·코드 없이 새 기기의 응답을 기다린다.
+  if (!p.textCode) {
+    return (
+      <main>
+        <h1>기기 연결</h1>
+        <p className="note" data-testid="message">
+          <b>{p.peerName}</b> 기기에 연결하는 중입니다. {p.message}
+        </p>
+        <button className="secondary" data-testid="cancel" onClick={close}>
+          취소
+        </button>
+      </main>
+    );
+  }
+
   return (
     <main>
       <h1>기기 추가</h1>

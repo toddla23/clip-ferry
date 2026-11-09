@@ -15,6 +15,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
+use clip_ferry_core::link::AccountLink;
+use clip_ferry_core::pb;
 use clip_ferry_core::store::SecretStore;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -48,6 +50,9 @@ struct Saved {
     email: String,
     #[serde(default)]
     name: String,
+    /// 계정 ID (F37 계정 연결). F34 때 저장한 정보에는 없어서 처음 쓸 때 `/v1/me`로 채운다.
+    #[serde(default)]
+    user_id: String,
 }
 
 #[derive(Clone)]
@@ -90,6 +95,8 @@ struct TokenResponse {
 
 #[derive(Deserialize)]
 struct UserView {
+    #[serde(default)]
+    id: String,
     email: String,
     #[serde(default)]
     name: String,
@@ -197,6 +204,7 @@ impl Account {
             refresh_token: r.refresh_token,
             email: r.user.email,
             name: r.user.name,
+            user_id: r.user.id,
         };
         // 저장에 실패하면 다음 실행 때 옛 갱신 토큰을 쓰게 되어(재사용) 로그인이 끊긴다.
         // 그래도 지금은 메모리의 새 토큰으로 계속 동작한다.
@@ -212,6 +220,151 @@ impl Account {
             issued_at: now,
         });
         token
+    }
+
+    fn account_url(&self) -> Result<String, TokenError> {
+        self.data
+            .lock()
+            .unwrap()
+            .saved
+            .as_ref()
+            .map(|s| s.account_url.clone())
+            .ok_or(TokenError::SignedOut)
+    }
+
+    /// 계정 연결(F37)에 쓸 계정 ID와 계정 서버 공개키(`GET /v1/keys`).
+    pub async fn account_link(&self) -> Result<AccountLink, TokenError> {
+        let url = self.account_url()?;
+        let mut user_id = self
+            .data
+            .lock()
+            .unwrap()
+            .saved
+            .as_ref()
+            .map(|s| s.user_id.clone())
+            .unwrap_or_default();
+        if user_id.is_empty() {
+            // F34 때 로그인한 정보에는 계정 ID가 없다. 한 번 물어 저장해 둔다.
+            #[derive(Deserialize)]
+            struct Me {
+                user: UserView,
+            }
+            let token = self.token().await?;
+            let me: Me = self
+                .http
+                .get(format!("{url}/v1/me"))
+                .bearer_auth(token)
+                .send()
+                .await
+                .and_then(|r| r.error_for_status())
+                .map_err(|_| TokenError::Unavailable)?
+                .json()
+                .await
+                .map_err(|_| TokenError::Unavailable)?;
+            user_id = me.user.id;
+            let mut d = self.data.lock().unwrap();
+            if let Some(s) = d.saved.as_mut() {
+                s.user_id = user_id.clone();
+                if let Ok(bytes) = serde_json::to_vec(s) {
+                    let _ = self.secrets.set(KEY, &bytes);
+                }
+            }
+        }
+        if user_id.is_empty() {
+            return Err(TokenError::Unavailable);
+        }
+        #[derive(Deserialize)]
+        struct Jwk {
+            kid: String,
+            x: String,
+        }
+        #[derive(Deserialize)]
+        struct Jwks {
+            keys: Vec<Jwk>,
+        }
+        let jwks: Jwks = self
+            .http
+            .get(format!("{url}/v1/keys"))
+            .send()
+            .await
+            .and_then(|r| r.error_for_status())
+            .map_err(|_| TokenError::Unavailable)?
+            .json()
+            .await
+            .map_err(|_| TokenError::Unavailable)?;
+        let server_keys = jwks
+            .keys
+            .into_iter()
+            .filter_map(|k| {
+                let x: [u8; 32] = URL_SAFE_NO_PAD.decode(k.x).ok()?.try_into().ok()?;
+                Some((k.kid, x))
+            })
+            .collect();
+        Ok(AccountLink {
+            user_id,
+            server_keys,
+        })
+    }
+
+    /// 계정 서버에서 이 기기의 참여 확인서를 받는다 (`POST /v1/link/ticket`, F37).
+    pub async fn link_ticket(
+        &self,
+        sign_pub: &[u8; 32],
+        dh_pub: &[u8; 32],
+        name: &str,
+    ) -> Result<pb::LinkTicket, String> {
+        let url = self
+            .account_url()
+            .map_err(|_| "먼저 로그인하세요".to_string())?;
+        let token = self.token().await.map_err(|e| match e {
+            TokenError::SignedOut => "로그인이 만료되었습니다. 다시 로그인하세요".to_string(),
+            TokenError::Unavailable => format!("계정 서버({url})에 연결하지 못했습니다"),
+        })?;
+        let resp = self
+            .http
+            .post(format!("{url}/v1/link/ticket"))
+            .bearer_auth(token)
+            .json(&serde_json::json!({
+                "sign_pub": URL_SAFE_NO_PAD.encode(sign_pub),
+                "dh_pub": URL_SAFE_NO_PAD.encode(dh_pub),
+                "name": name,
+            }))
+            .send()
+            .await
+            .map_err(|_| format!("계정 서버({url})에 연결하지 못했습니다"))?;
+        match resp.status().as_u16() {
+            200 => {}
+            404 => return Err("계정 서버가 계정 연결을 받지 않습니다 (예전 버전)".into()),
+            s => return Err(format!("계정 서버 오류 (HTTP {s})")),
+        }
+        #[derive(Deserialize)]
+        struct Ticket {
+            user_id: String,
+            sign_pub: String,
+            dh_pub: String,
+            name: String,
+            expires_at_ms: u64,
+            kid: String,
+            signature: String,
+        }
+        let t: Ticket = resp
+            .json()
+            .await
+            .map_err(|_| "계정 서버 응답을 읽지 못했습니다".to_string())?;
+        let bytes = |s: &str| {
+            URL_SAFE_NO_PAD
+                .decode(s)
+                .map_err(|_| "계정 서버 응답을 읽지 못했습니다".to_string())
+        };
+        Ok(pb::LinkTicket {
+            user_id: t.user_id,
+            sign_pub: bytes(&t.sign_pub)?,
+            dh_pub: bytes(&t.dh_pub)?,
+            name: t.name,
+            expires_at_ms: t.expires_at_ms,
+            kid: t.kid,
+            signature: bytes(&t.signature)?,
+        })
     }
 
     /// 이 기기에서 로그인 정보를 지운다 (서버에는 알리지 않는다).
@@ -729,6 +882,48 @@ mod tests {
         let stale = Account::new(Box::new(old.clone()));
         assert_eq!(stale.token().await, Err(TokenError::SignedOut));
         assert!(old.get(KEY).is_none(), "거절된 갱신 토큰은 지운다");
+    }
+
+    /// 계정 연결(F37): 계정 ID와 서버 공개키를 받고, 받은 참여 확인서가 코어 확인을 통과한다.
+    /// F34 때 저장한 로그인(계정 ID 없음)도 `/v1/me`로 채운다.
+    #[tokio::test]
+    async fn account_link_and_ticket() {
+        let url = account_server().await;
+        let store = MemorySecretStore::default();
+        let acc = Account::new(Box::new(store.clone()));
+        acc.dev_login(&url, "me@test.dev").await.unwrap();
+        // 예전 버전이 저장한 정보처럼 계정 ID를 비운다
+        acc.data
+            .lock()
+            .unwrap()
+            .saved
+            .as_mut()
+            .unwrap()
+            .user_id
+            .clear();
+
+        let link = acc.account_link().await.unwrap();
+        assert_eq!(link.user_id.len(), 32);
+        assert_eq!(link.server_keys.len(), 1);
+        let raw = String::from_utf8(store.get(KEY).unwrap()).unwrap();
+        assert!(raw.contains(&link.user_id), "채운 계정 ID를 저장한다");
+
+        let keys = clip_ferry_core::crypto::DeviceKeys::generate();
+        let ticket = acc
+            .link_ticket(&keys.sign_public(), &keys.dh_public(), "새 PC")
+            .await
+            .unwrap();
+        let (sign_pub, dh_pub) =
+            clip_ferry_core::link::verify_ticket(&ticket, &link, clip_ferry_core::api::now_ms())
+                .unwrap();
+        assert_eq!(sign_pub, keys.sign_public());
+        assert_eq!(dh_pub, keys.dh_public());
+
+        acc.logout().await;
+        assert!(acc
+            .link_ticket(&keys.sign_public(), &keys.dh_public(), "새 PC")
+            .await
+            .is_err());
     }
 
     #[tokio::test]

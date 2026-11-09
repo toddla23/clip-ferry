@@ -109,6 +109,10 @@ pub async fn invite(app: &ClipFerry, relay: String) -> anyhow::Result<()> {
                                     println!("상대 화면의 숫자와 같으면 y, 다르면 n 을 입력하세요:");
                                 }
                             }
+                            // 계정 연결(봉인 후 공개) 초대만 내는 응답. CLI 초대에서는 오지 않는다.
+                            InviterEvent::Reply(payload) => {
+                                client.publish(pair_channel, payload, vec![]);
+                            }
                             InviterEvent::Invalid(p) => bail!("{}", describe(p)),
                         }
                     }

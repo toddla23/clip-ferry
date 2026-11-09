@@ -8,6 +8,8 @@
 //! F18: 텍스트·이미지 보내기(셸이 클립보드에서 읽어 넘긴다).
 //! F35: 계정 로그인(셸이 받은 구글 ID 토큰 → 계정 서버). 로그인해야 릴레이에 연결하고,
 //!      모든 릴레이 연결에 접속 토큰을 싣는다(`account`).
+//! F37: 계정 연결. 세션이 계정 채널을 듣고 새 기기의 요청을 알린다(`on_link_request`),
+//!      새 기기는 `start_link_join`으로 QR·코드 없이 참여를 요청한다.
 
 mod account;
 
@@ -17,6 +19,7 @@ use std::sync::{Arc, Mutex};
 
 use clip_ferry_core::api::{Clip, ClipFerry, Config, Error, GroupHealth, ImageClip};
 use clip_ferry_core::crypto::DeviceId;
+use clip_ferry_core::link::{AccountLink, LinkRequestInfo};
 use clip_ferry_core::pair_flow::{self, InviteFlow, InviteUpdate, JoinFlow, JoinUpdate};
 use clip_ferry_core::pairing::Invite;
 use clip_ferry_core::session::{ConnectionStatus, EventSink, SendError, Session};
@@ -194,6 +197,9 @@ pub trait CoreEvents: Send + Sync {
     /// 계정 서버가 로그인을 받지 않아(만료·다른 곳에서 로그아웃·재사용) 로그인 정보를 지웠다.
     /// 세션은 이미 닫았다. 셸은 로그인 화면으로 간다. `message`는 사용자에게 보여 줄 문장.
     fn on_signed_out(&self, message: String);
+    /// 같은 계정의 새 기기가 참여를 요청했다(F37, 참여 확인서는 확인했다). 셸은 알림·카드를 띄우고,
+    /// 사용자가 응하면 `accept_link_request`, 아니면 `dismiss_link_request`를 부른다.
+    fn on_link_request(&self, peer_name: String);
 }
 
 /// 화면에 보여 줄 로그인 정보. 토큰은 들어 있지 않다.
@@ -229,6 +235,7 @@ struct EventAdapter {
     events: Arc<dyn CoreEvents>,
     online: Arc<Mutex<Vec<DeviceId>>>,
     account: Arc<Account>,
+    link_request: Arc<Mutex<Option<LinkRequestInfo>>>,
 }
 
 impl EventSink for EventAdapter {
@@ -267,6 +274,12 @@ impl EventSink for EventAdapter {
 
     fn on_group_health(&self, _health: GroupHealth) {
         self.events.on_changed();
+    }
+
+    fn on_link_request(&self, request: LinkRequestInfo) {
+        let name = request.name.clone();
+        *self.link_request.lock().unwrap() = Some(request);
+        self.events.on_link_request(name);
     }
 
     fn on_presence(&self, online: Vec<DeviceId>) {
@@ -355,6 +368,10 @@ pub struct ClipFerryClient {
     pairing: Mutex<Option<Pairing>>,
     /// 페어링을 새로 시작하거나 닫을 때마다 늘린다. 이전 진행의 늦은 알림을 버리는 데 쓴다.
     pair_gen: Arc<AtomicU64>,
+    /// 계정 채널 정보(F37). 세션을 열 때 계정 서버에서 받는다.
+    account_link: Arc<Mutex<Option<AccountLink>>>,
+    /// 사용자가 아직 응하지 않은 새 기기의 참여 요청
+    link_request: Arc<Mutex<Option<LinkRequestInfo>>>,
 }
 
 #[uniffi::export]
@@ -385,6 +402,8 @@ impl ClipFerryClient {
             online: Arc::new(Mutex::new(Vec::new())),
             pairing: Mutex::new(None),
             pair_gen: Arc::new(AtomicU64::new(0)),
+            account_link: Arc::default(),
+            link_request: Arc::default(),
         }))
     }
 
@@ -460,11 +479,15 @@ impl ClipFerryClient {
                 events,
                 online: self.online.clone(),
                 account: self.account.clone(),
+                link_request: self.link_request.clone(),
             }),
         )?;
-        *slot = Some(Arc::new(session));
+        let session = Arc::new(session);
+        session.set_account_link(self.account_link.lock().unwrap().clone());
+        *slot = Some(session.clone());
         drop(slot);
         self.register_device_once();
+        self.listen_account(&session);
         Ok(())
     }
 
@@ -517,23 +540,8 @@ impl ClipFerryClient {
         let mut slot = self.pairing.lock().unwrap();
         *slot = None;
         let forward = self.forwarder(listener);
-        let flow = pair_flow::start_invite(&self.app, url, config, move |u| {
-            forward(match u {
-                InviteUpdate::Request { joiner_name, sas } => PairEvent::Request {
-                    peer_name: joiner_name,
-                    sas,
-                },
-                InviteUpdate::Approved {
-                    joiner_name,
-                    delivered,
-                } => PairEvent::Approved {
-                    peer_name: joiner_name,
-                    delivered,
-                },
-                InviteUpdate::Rejected => PairEvent::Rejected,
-                InviteUpdate::Ended(message) => PairEvent::Ended { message },
-            })
-        })?;
+        let flow =
+            pair_flow::start_invite(&self.app, url, config, move |u| forward(invite_event(u)))?;
         let info = InviteInfo {
             text_code: flow.text_code.clone(),
             qr_string: flow.qr_string.clone(),
@@ -578,22 +586,91 @@ impl ClipFerryClient {
             Some(relay.clone()),
             &relay,
             config,
-            move |u| {
-                forward(match u {
-                    JoinUpdate::Connected => PairEvent::Connected,
-                    JoinUpdate::WaitingApproval { inviter_name, sas } => {
-                        PairEvent::WaitingApproval {
-                            peer_name: inviter_name,
-                            sas,
-                        }
-                    }
-                    JoinUpdate::Joined => PairEvent::Joined,
-                    JoinUpdate::Ended(message) => PairEvent::Ended { message },
-                })
-            },
+            move |u| forward(join_event(u)),
         )?;
         *slot = Some(Pairing::Join(flow));
         Ok(relay)
+    }
+
+    // ------------------------------------------------------------ 계정 연결 (F37)
+
+    /// 아직 응하지 않은 새 기기의 참여 요청(기기 이름). 만료되었거나 없으면 `None`.
+    pub fn pending_link_request(&self) -> Option<String> {
+        let slot = self.link_request.lock().unwrap();
+        slot.as_ref()
+            .filter(|r| r.expires_at_ms > clip_ferry_core::api::now_ms())
+            .map(|r| r.name.clone())
+    }
+
+    pub fn dismiss_link_request(&self) {
+        *self.link_request.lock().unwrap() = None;
+    }
+
+    /// 새 기기의 참여 요청에 응한다. 진행은 `listener`로 오고(`Request` → `decide_invite` → `Approved`),
+    /// 이미 진행 중인 페어링은 닫는다.
+    pub fn accept_link_request(
+        &self,
+        relay_url: String,
+        listener: Arc<dyn PairListener>,
+    ) -> Result<(), FfiError> {
+        let url = check_relay(&relay_url)?;
+        if !self.account.is_signed_in() {
+            return Err(not_signed_in());
+        }
+        let request = self
+            .link_request
+            .lock()
+            .unwrap()
+            .take()
+            .filter(|r| r.expires_at_ms > clip_ferry_core::api::now_ms())
+            .ok_or_else(|| failed("참여 요청이 없거나 만료되었습니다".into()))?;
+        let channel = self
+            .account_link
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|l| l.channel())
+            .ok_or_else(|| failed("계정 정보를 아직 받지 못했습니다".into()))?;
+        let config = self.transport_config(None);
+        let _guard = self.runtime.enter();
+        let mut slot = self.pairing.lock().unwrap();
+        *slot = None;
+        let forward = self.forwarder(listener);
+        let flow =
+            pair_flow::start_link_invite(&self.app, url, config, channel, &request, move |u| {
+                forward(invite_event(u))
+            })?;
+        *slot = Some(Pairing::Invite(flow));
+        Ok(())
+    }
+
+    /// 같은 계정으로 로그인한 다른 기기에 참여를 요청한다(QR·코드 없이). 그룹이 없는 기기여야 한다.
+    /// 계정 서버에서 참여 확인서를 받으므로 메인 스레드가 아닌 곳에서 부른다.
+    /// 참여가 끝나면(`Joined`) 셸은 `relay_url`로 연결한다.
+    pub fn start_link_join(
+        &self,
+        relay_url: String,
+        listener: Arc<dyn PairListener>,
+    ) -> Result<(), FfiError> {
+        let url = check_relay(&relay_url)?.to_string();
+        if !self.account.is_signed_in() {
+            return Err(not_signed_in());
+        }
+        let (sign_pub, dh_pub, name) = self.app.link_identity()?;
+        let ticket = self
+            .runtime
+            .block_on(self.account.link_ticket(&sign_pub, &dh_pub, &name))
+            .map_err(failed)?;
+        let config = self.transport_config(None);
+        let _guard = self.runtime.enter();
+        let mut slot = self.pairing.lock().unwrap();
+        *slot = None;
+        let forward = self.forwarder(listener);
+        let flow = pair_flow::start_link_join(&self.app, &url, config, ticket, move |u| {
+            forward(join_event(u))
+        })?;
+        *slot = Some(Pairing::Join(flow));
+        Ok(())
     }
 
     /// 진행 중이거나 끝난 페어링을 닫는다(진행 중이면 취소). 이후 그 진행의 알림은 오지 않는다.
@@ -651,6 +728,8 @@ impl ClipFerryClient {
     pub fn logout(&self) {
         self.stop();
         self.cancel_pairing();
+        *self.account_link.lock().unwrap() = None;
+        *self.link_request.lock().unwrap() = None;
         self.runtime.block_on(self.account.logout());
         self.registered.store(false, Ordering::SeqCst);
     }
@@ -722,6 +801,36 @@ impl ClipFerryClient {
         });
     }
 
+    /// 세션이 계정 채널을 듣게 한다(F37). 계정 서버에 닿지 않으면 1분 뒤 다시 시도한다.
+    fn listen_account(&self, session: &Arc<Session>) {
+        if self.account_link.lock().unwrap().is_some() {
+            return;
+        }
+        let account = self.account.clone();
+        let slot = self.account_link.clone();
+        let target = Arc::downgrade(session);
+        self.runtime.spawn(async move {
+            loop {
+                // 세션이 닫혔으면(다시 시작·로그아웃) 그만둔다.
+                if target.strong_count() == 0 {
+                    return;
+                }
+                match account.account_link().await {
+                    Ok(link) => {
+                        if let Some(session) = target.upgrade() {
+                            session.set_account_link(Some(link.clone()));
+                            *slot.lock().unwrap() = Some(link);
+                        }
+                        return;
+                    }
+                    Err(TokenError::SignedOut) => return,
+                    Err(TokenError::Unavailable) => {}
+                }
+                tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+            }
+        });
+    }
+
     fn current_session(&self) -> Result<Arc<Session>, FfiError> {
         self.session
             .lock()
@@ -741,6 +850,36 @@ impl ClipFerryClient {
                 listener.on_pair_event(event);
             }
         }
+    }
+}
+
+fn invite_event(u: InviteUpdate) -> PairEvent {
+    match u {
+        InviteUpdate::Request { joiner_name, sas } => PairEvent::Request {
+            peer_name: joiner_name,
+            sas,
+        },
+        InviteUpdate::Approved {
+            joiner_name,
+            delivered,
+        } => PairEvent::Approved {
+            peer_name: joiner_name,
+            delivered,
+        },
+        InviteUpdate::Rejected => PairEvent::Rejected,
+        InviteUpdate::Ended(message) => PairEvent::Ended { message },
+    }
+}
+
+fn join_event(u: JoinUpdate) -> PairEvent {
+    match u {
+        JoinUpdate::Connected => PairEvent::Connected,
+        JoinUpdate::WaitingApproval { inviter_name, sas } => PairEvent::WaitingApproval {
+            peer_name: inviter_name,
+            sas,
+        },
+        JoinUpdate::Joined => PairEvent::Joined,
+        JoinUpdate::Ended(message) => PairEvent::Ended { message },
     }
 }
 
@@ -797,6 +936,7 @@ mod tests {
         images: Mutex<Vec<(String, String, Vec<u8>)>>,
         auth_rejected: Mutex<u32>,
         signed_out: Mutex<Vec<String>>,
+        link_requests: Mutex<Vec<String>>,
     }
 
     impl CoreEvents for Recorder {
@@ -818,6 +958,9 @@ mod tests {
         }
         fn on_signed_out(&self, message: String) {
             self.signed_out.lock().unwrap().push(message);
+        }
+        fn on_link_request(&self, peer_name: String) {
+            self.link_requests.lock().unwrap().push(peer_name);
         }
     }
 
@@ -970,6 +1113,92 @@ mod tests {
         String,
     ) {
         relay_with(false)
+    }
+
+    /// 같은 계정으로 로그인한 새 폰이 QR·코드 없이 들어온다(F37). 토큰을 확인하는 릴레이에서.
+    #[test]
+    fn same_account_phone_links_without_code() {
+        let (_rt, _relay, url) = relay_with(true);
+        let a = phone("내 PC", true);
+        let b = phone("새 폰", false);
+        let a_events = Arc::new(Recorder::default());
+        a.client.start(url.clone(), a_events.clone()).unwrap();
+        wait_until(
+            || a.client.account_link.lock().unwrap().is_some(),
+            "계정 채널 정보를 받지 못함",
+        );
+
+        let b_pair = Arc::new(PairRecorder::default());
+        b.client
+            .start_link_join(url.clone(), b_pair.clone())
+            .unwrap();
+        wait_until(
+            || !a_events.link_requests.lock().unwrap().is_empty(),
+            "참여 요청 알림이 오지 않음",
+        );
+        assert_eq!(a_events.link_requests.lock().unwrap()[0], "새 폰");
+        assert_eq!(a.client.pending_link_request().as_deref(), Some("새 폰"));
+
+        let a_pair = Arc::new(PairRecorder::default());
+        a.client
+            .accept_link_request(url.clone(), a_pair.clone())
+            .unwrap();
+        assert!(a.client.pending_link_request().is_none());
+        let a_sas = a_pair.wait(|e| match e {
+            PairEvent::Request { peer_name, sas } if peer_name == "새 폰" => Some(sas.clone()),
+            _ => None,
+        });
+        let b_sas = b_pair.wait(|e| match e {
+            PairEvent::WaitingApproval { peer_name, sas } if peer_name == "내 PC" => {
+                Some(sas.clone())
+            }
+            _ => None,
+        });
+        assert_eq!(a_sas, b_sas);
+        a.client.decide_invite(true);
+        b_pair.wait(|e| (*e == PairEvent::Joined).then_some(()));
+        assert!(b.client.has_group());
+        assert_eq!(b.client.status().unwrap().member_count, 2);
+
+        // 요청이 없으면 응할 수 없다
+        assert!(a
+            .client
+            .accept_link_request(url, Arc::new(PairRecorder::default()))
+            .is_err());
+    }
+
+    /// 다른 계정의 기기는 요청을 보내도 알림이 오지 않는다.
+    #[test]
+    fn other_account_phone_is_not_announced() {
+        let (_rt, _relay, url) = relay();
+        let a = phone("내 PC", true);
+        let stranger = signed_out_phone("남의 폰", false);
+        stranger
+            .client
+            .login_dev(account_server().url.clone(), "other@test.dev".into())
+            .unwrap();
+        let a_events = Arc::new(Recorder::default());
+        a.client.start(url.clone(), a_events.clone()).unwrap();
+        wait_until(
+            || a.client.account_link.lock().unwrap().is_some(),
+            "계정 채널 정보를 받지 못함",
+        );
+        stranger
+            .client
+            .start_link_join(url, Arc::new(PairRecorder::default()))
+            .unwrap();
+        std::thread::sleep(Duration::from_secs(4));
+        assert!(a_events.link_requests.lock().unwrap().is_empty());
+        assert!(a.client.pending_link_request().is_none());
+    }
+
+    #[test]
+    fn link_join_needs_sign_in() {
+        let p = signed_out_phone("폰", false);
+        assert!(p
+            .client
+            .start_link_join("ws://127.0.0.1:1".into(), Arc::new(PairRecorder::default()))
+            .is_err());
     }
 
     #[test]

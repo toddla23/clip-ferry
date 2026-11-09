@@ -141,6 +141,8 @@ private fun ReadyScreen(state: UiState, batteryExempt: Boolean) {
 
     StatusCard(state)
 
+    state.linkRequest?.let { LinkRequestCard(it) }
+
     ReceiveCard(state)
 
     SendCard(state)
@@ -315,6 +317,32 @@ private fun AccountCard(state: UiState) {
 }
 
 /** 보내기: 타일·알림 버튼 안내, 타일 추가, 지금 보내기, 민감한 내용 설정. */
+/** 같은 계정의 새 기기가 연결을 요청했다(F37). 연결을 누르면 확인 숫자 화면으로 간다. */
+@Composable
+private fun LinkRequestCard(peerName: String) {
+    var error by remember { mutableStateOf<String?>(null) }
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("새 기기 연결 요청", style = MaterialTheme.typography.titleMedium)
+            Text(
+                "같은 계정으로 로그인한 '$peerName' 기기가 이 그룹에 들어오려고 합니다. " +
+                    "연결을 누르면 양쪽 화면에 확인 숫자가 뜹니다.",
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                OutlinedButton(
+                    onClick = { CoreController.dismissLinkRequest() },
+                    modifier = Modifier.weight(1f),
+                ) { Text("무시") }
+                Button(
+                    onClick = { error = CoreController.acceptLinkRequest() },
+                    modifier = Modifier.weight(1f),
+                ) { Text("연결") }
+            }
+            error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+        }
+    }
+}
+
 @Composable
 private fun SendCard(state: UiState) {
     val context = LocalContext.current

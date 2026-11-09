@@ -39,6 +39,8 @@ pub enum TokenError {
 pub struct Signer {
     kid: String,
     public: [u8; 32],
+    /// 계정 연결 참여 확인서(F37) 서명용
+    signing: SigningKey,
     encoding: EncodingKey,
     decoding: DecodingKey,
 }
@@ -58,6 +60,7 @@ impl Signer {
         Signer {
             kid,
             public,
+            signing,
             encoding: EncodingKey::from_ed_der(&der),
             decoding: DecodingKey::from_ed_components(&URL_SAFE_NO_PAD.encode(public))
                 .expect("올바른 공개키"),
@@ -90,6 +93,16 @@ impl Signer {
 
     pub fn kid(&self) -> &str {
         &self.kid
+    }
+
+    pub fn public(&self) -> [u8; 32] {
+        self.public
+    }
+
+    /// 임의 바이트에 서명한다 (계정 연결 참여 확인서, `link`).
+    pub fn sign_raw(&self, msg: &[u8]) -> [u8; 64] {
+        use ed25519_dalek::Signer as _;
+        self.signing.sign(msg).to_bytes()
     }
 
     /// 계정 `user_id`의 접속 토큰. 돌려주는 두 번째 값은 만료 시각(Unix 초).
