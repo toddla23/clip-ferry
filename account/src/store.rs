@@ -191,8 +191,7 @@ impl Store {
         match self {
             Store::Memory(m) => m.upsert_device(user_id, device_id, &name, platform, now),
             Store::Maria(m) => {
-                m.upsert_device(user_id, device_id, &name, platform, now)
-                    .await
+                retry_deadlock(|| m.upsert_device(user_id, device_id, &name, platform, now)).await
             }
         }
     }
@@ -236,7 +235,9 @@ impl Store {
     ) -> Result<Rotate> {
         match self {
             Store::Memory(m) => Ok(m.rotate_refresh(old, new, now, new_expires_at)),
-            Store::Maria(m) => m.rotate_refresh(old, new, now, new_expires_at).await,
+            Store::Maria(m) => {
+                retry_deadlock(|| m.rotate_refresh(old, new, now, new_expires_at)).await
+            }
         }
     }
 
@@ -435,6 +436,34 @@ impl Store {
                     .collect()
             }
         }
+    }
+}
+
+/// 동시에 같은 표에 쓰는 트랜잭션끼리 교착하면 MariaDB가 한쪽을 되돌린다(1213, SQLSTATE 40001).
+/// 되돌려진 트랜잭션은 아무것도 남기지 않았으므로 처음부터 다시 하면 된다. 몇 번까지만.
+async fn retry_deadlock<T, F, Fut>(mut run: F) -> Result<T>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<T>>,
+{
+    const ATTEMPTS: u32 = 4;
+    let mut attempt = 1;
+    loop {
+        match run().await {
+            Err(StoreError::Db(e)) if attempt < ATTEMPTS && is_deadlock(&e) => {
+                tracing::warn!("db deadlock; retrying ({attempt}/{ATTEMPTS})");
+                tokio::time::sleep(Duration::from_millis(10 * u64::from(attempt))).await;
+                attempt += 1;
+            }
+            r => return r,
+        }
+    }
+}
+
+fn is_deadlock(e: &sqlx::Error) -> bool {
+    match e {
+        sqlx::Error::Database(d) => d.code().as_deref() == Some("40001"),
+        _ => false,
     }
 }
 

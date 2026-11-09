@@ -29,6 +29,8 @@ const USAGE_SECRET: &str = "test-usage-secret";
 async fn stores() -> Vec<(&'static str, Store)> {
     // 테스트들이 동시에 마이그레이션을 돌리지 않게 연결은 하나씩 (빈 DB에서 처음 만들 때 부딪힌다)
     static CONNECT: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+    // 실패한 테스트의 출력에 서버 로그(`store: …` 같은 DB 오류 원문)가 함께 나오게 한다
+    let _ = tracing_subscriber::fmt().with_test_writer().try_init();
     let mut v = vec![("memory", Store::memory())];
     if let Ok(url) = std::env::var("CF_TEST_MARIADB_URL") {
         let _one = CONNECT.lock().await;
