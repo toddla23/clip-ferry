@@ -46,7 +46,7 @@
 | F34 | 데스크톱 로그인 | F33 | 완료 | 사용자 PC 확인 1~7 통과(7: Pi 계정 서버로 기존 앱 업데이트, 폰 동기화 유지), 세 OS + `account (MariaDB)` CI 통과(PR #29). 확인 문서: `todo/F34-확인.md` |
 | F35 | Android 로그인 | F33 | 완료 | 실기기 확인 0~6 통과(Releases 배포 APK 위에 배포 키 release 빌드로 업데이트, 그룹 유지, 토큰 확인 릴레이 접속), 세 OS + `account (MariaDB)` CI 통과(PR #30). 확인 문서: `todo/F35-확인.md` |
 | F36 | iOS 로그인 (구글 + Apple) | F33, F25 | 대기 | |
-| F37 | 계정으로 기기 연결 | F34, F35 | 진행중 | 브랜치 `f37-account-link`. SAS 확인 유지 + 키 봉인 후 공개(D-022) |
+| F37 | 계정으로 기기 연결 | F34, F35 | 확인대기 | 브랜치 `f37-account-link`. SAS 확인 유지 + 키 봉인 후 공개(D-022) |
 | F38 | 운영자 통계 | F33 | 대기 | |
 | F39 | 계정 삭제 · 개인정보처리방침 | F34, F35 | 대기 | |
 | F40 | 공개 배포 (도메인 · 클라우드) | F32~F39, O-03, O-04 | 대기 | |
@@ -62,6 +62,7 @@
 
 새 항목을 위에 추가한다. 형식: `YYYY-MM-DD F00 — 한 줄`
 
+- 2026-11-09 F37 — 실기기 확인(데스크톱↔데스크톱 연결·무시·거절, 폰이 기존 기기로 PC-C를 받음, 폰이 계정 연결로 다시 참여, 양쪽 전송). 고친 것: 데스크톱 시작 시 교착(로그인된 프로필에서 `응답 없음`), CLI `InviterEvent::Reply` 미처리(CI clippy). 확인대기
 - 2026-11-08 F37 — 계정 서버 `POST /v1/link/ticket`(참여 확인서, 접속 토큰 키로 서명), 코어 `link`(계정 채널 `HKDF(user_id)`, 확인서 확인)·봉인 후 공개 페어링(`PairCommit`·`PairReveal`, SAS에 두 nonce)·`start_link_invite`/`start_link_join`·`Session::set_account_link`/`on_link_request`, 데스크톱(마법사 버튼·홈 화면 요청 카드·알림), FFI·Android(첫 화면 버튼·요청 카드·알림 채널). 03-protocol 4.4, D-022. 테스트: 코어 +10(중간자면 숫자 다름), 계정 +4, 릴레이 통합 3, 데스크톱 +1, FFI +3. `assembleDebug` 성공. 확인 문서 `todo/F37-확인.md`. 진행중
 - 2026-11-08 F37 — 시작 (브랜치 `f37-account-link`). 설계 합의: 계정 채널 + 계정 서버 서명 참여 확인서 + 키 봉인 후 공개(D-022)
 - 2026-11-08 F35 — PR #30 CI 통과·머지. 완료
