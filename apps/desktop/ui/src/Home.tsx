@@ -12,20 +12,6 @@ export default function Home({
 }) {
   const [relay, setRelay] = useState(view.relayUrl);
   const [message, setMessage] = useState<string | null>(null);
-  const [deleting, setDeleting] = useState(false);
-  const [busy, setBusy] = useState(false);
-
-  async function deleteAccount() {
-    setBusy(true);
-    setMessage(null);
-    try {
-      onView(await invoke<AppView>("delete_account"));
-    } catch (e) {
-      setMessage(String(e));
-    } finally {
-      setBusy(false);
-    }
-  }
 
   // 명령을 부르고 결과 상태를 반영한다. 실패하면 메시지를 보여 준다.
   async function call(cmd: string, args?: Record<string, unknown>, ok?: string) {
@@ -99,43 +85,10 @@ export default function Home({
             {view.account?.name ? `${view.account.name} · ` : ""}
             {view.account?.email}
           </span>
-          <div className="row">
-            <button className="secondary" data-testid="logout" onClick={() => call("logout")}>
-              로그아웃
-            </button>
-            {!deleting && (
-              <button
-                className="secondary"
-                data-testid="delete-account"
-                onClick={() => setDeleting(true)}
-              >
-                계정 삭제
-              </button>
-            )}
-          </div>
+          <button className="secondary" data-testid="logout" onClick={() => call("logout")}>
+            로그아웃
+          </button>
         </div>
-        {deleting && (
-          <div data-testid="delete-account-confirm">
-            <p className="warn">
-              계정을 삭제하면 서버에 있는 계정 정보·기기 목록·사용 기록이 바로 지워지고 되돌릴 수 없습니다.
-              같은 계정으로 로그인한 다른 기기도 곧 로그아웃됩니다. 이 기기의 그룹 정보도 지웁니다.
-              클립보드 내용은 원래 서버에 없습니다.
-            </p>
-            <div className="row">
-              <button
-                className="danger"
-                data-testid="delete-account-ok"
-                disabled={busy}
-                onClick={deleteAccount}
-              >
-                {busy ? "삭제하는 중…" : "계정 삭제"}
-              </button>
-              <button className="secondary" disabled={busy} onClick={() => setDeleting(false)}>
-                취소
-              </button>
-            </div>
-          </div>
-        )}
       </section>
 
       <section>

@@ -121,11 +121,6 @@ async fn dev_login(shell: State<'_, Arc<Shell>>, email: String) -> Result<AppVie
 }
 
 #[tauri::command]
-async fn delete_account(shell: State<'_, Arc<Shell>>) -> Result<AppView, String> {
-    shell.delete_account().await
-}
-
-#[tauri::command]
 async fn logout(shell: State<'_, Arc<Shell>>) -> Result<AppView, String> {
     Ok(shell.logout().await)
 }
@@ -168,7 +163,6 @@ fn main() {
             cancel_login,
             dev_login,
             logout,
-            delete_account,
             set_account_url
         ])
         .on_window_event(|window, event| {

@@ -365,35 +365,6 @@ object CoreController : CoreEvents {
         refresh()
     }
 
-    /**
-     * 계정 삭제(F39): 계정 서버에서 계정·기기·사용 기록을 지우고, 이 기기의 그룹·로그인 정보도 지운다.
-     * 실패하면 아무것도 바뀌지 않고 이유를 돌려준다.
-     */
-    suspend fun deleteAccount(): String? {
-        val c = ensureOpen()
-        val error = withContext(Dispatchers.IO) {
-            runCatching { c.deleteAccount() }.exceptionOrNull()
-        }
-        if (error != null) return error.message ?: error.toString()
-        ClipFerryService.stop(appContext)
-        GoogleLogin.clear(appContext)
-        LinkNotice.clear(appContext)
-        mutableState.update {
-            it.copy(
-                account = null,
-                link = Link.STOPPED,
-                online = 0,
-                pairing = null,
-                loginMessage = "계정을 삭제했습니다. 이 기기의 그룹 정보도 지웠습니다.",
-                authRejected = false,
-                linkRequest = null,
-                error = null,
-            )
-        }
-        refresh()
-        return null
-    }
-
     // ------------------------------------------------------- 첫 실행 · 그룹
 
     /** 새 그룹을 만들고 연결을 켠다. 실패하면 이유를 돌려준다. */

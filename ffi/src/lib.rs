@@ -723,22 +723,6 @@ impl ClipFerryClient {
         Ok(p.into())
     }
 
-    /// 계정 삭제(F39): 계정 서버에서 계정·기기·사용량을 지운 뒤, 이 기기의 그룹 정보와 로그인 정보를 지운다.
-    /// 서버가 지우지 못하면 아무것도 바꾸지 않고 오류를 돌려준다. 메인 스레드가 아닌 곳에서 부른다.
-    pub fn delete_account(&self) -> Result<(), FfiError> {
-        self.runtime
-            .block_on(self.account.delete_account())
-            .map_err(failed)?;
-        self.stop();
-        self.cancel_pairing();
-        *self.account_link.lock().unwrap() = None;
-        *self.link_request.lock().unwrap() = None;
-        self.registered.store(false, Ordering::SeqCst);
-        // 계정은 이미 지워졌다. 기기를 만들기 전이라 그룹이 없으면 그냥 넘어간다.
-        let _ = self.app.leave_group();
-        Ok(())
-    }
-
     /// 로그아웃: 연결과 페어링을 닫고, 계정 서버에 알린 뒤(실패해도) 이 기기의 로그인 정보를 지운다.
     /// 그룹·페어링은 그대로다. 메인 스레드가 아닌 곳에서 부른다.
     pub fn logout(&self) {
@@ -1649,35 +1633,6 @@ mod tests {
         assert_eq!(s.device_id_short, before);
         assert!(p.client.devices().is_empty());
         // 다시 새 그룹을 만들 수 있다.
-        p.client.create_group().unwrap();
-        assert!(p.client.has_group());
-    }
-
-    /// 계정 삭제(F39): 서버에서 지우고 이 기기의 로그인·그룹 정보도 지운다. 기기 키는 그대로다.
-    #[test]
-    fn delete_account_leaves_group_and_signs_out() {
-        // 다른 테스트가 함께 쓰는 계정(me@test.dev)을 지우지 않게 따로 만든다
-        let email = format!("gone-{}@test.dev", clip_ferry_account::random_id());
-        let p = signed_out_phone("폰", true);
-        p.client
-            .login_dev(account_server().url.clone(), email.clone())
-            .unwrap();
-        let before = p.client.status().unwrap().device_id_short;
-        p.client
-            .start("ws://127.0.0.1:1".into(), Arc::new(Recorder::default()))
-            .unwrap();
-
-        p.client.delete_account().unwrap();
-        assert!(!p.client.is_signed_in());
-        assert!(!p.client.is_running());
-        assert!(!p.client.has_group(), "그룹 정보도 지운다");
-        assert_eq!(p.client.status().unwrap().device_id_short, before);
-        assert!(p.client.delete_account().is_err(), "로그인 안 됨");
-
-        // 같은 이메일로 다시 로그인하면 새 계정이고, 이 기기로 새 그룹을 만들 수 있다
-        p.client
-            .login_dev(account_server().url.clone(), email)
-            .unwrap();
         p.client.create_group().unwrap();
         assert!(p.client.has_group());
     }
