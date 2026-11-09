@@ -1084,6 +1084,16 @@ async fn admin_only_for_allow_listed_google_accounts() {
     }
 }
 
+/// 전체 합계의 증가분. 메모리 저장소는 테스트마다 따로라 정확히 맞아야 하고,
+/// MariaDB는 다른 테스트가 같은 DB에 동시에 쓰므로 적어도 그만큼 늘었는지만 본다.
+fn grew(store: &str, got: i64, want: i64, what: &str) {
+    if store == "memory" {
+        assert_eq!(got, want, "{store}: {what}");
+    } else {
+        assert!(got >= want, "{store}: {what} {got} < {want}");
+    }
+}
+
 #[tokio::test]
 async fn admin_stats_users_and_detail() {
     for (name, store) in stores().await {
@@ -1113,9 +1123,9 @@ async fn admin_stats_users_and_detail() {
         let delta = |k: &str| {
             after["overview"][k].as_i64().unwrap() - before["overview"][k].as_i64().unwrap()
         };
-        assert_eq!(delta("users"), 2, "{name}: {after}");
-        assert_eq!(delta("dau"), 1, "{name}: 전송한 계정만 활성");
-        assert_eq!(delta("mau"), 1, "{name}");
+        grew(name, delta("users"), 2, "가입자");
+        grew(name, delta("dau"), 1, "DAU: 전송한 계정만 활성");
+        grew(name, delta("mau"), 1, "MAU");
         let platform = |v: &Value, p: &str, k: &str| {
             v["overview"]["platforms"]
                 .as_array()
@@ -1125,15 +1135,17 @@ async fn admin_stats_users_and_detail() {
                 .map(|x| x[k].as_i64().unwrap())
                 .unwrap_or(0)
         };
-        assert_eq!(
+        grew(
+            name,
             platform(&after, "android", "devices") - platform(&before, "android", "devices"),
             2,
-            "{name}"
+            "android 기기",
         );
-        assert_eq!(
+        grew(
+            name,
             platform(&after, "windows", "seen_30d") - platform(&before, "windows", "seen_30d"),
             1,
-            "{name}"
+            "windows 최근 접속",
         );
         let daily = after["daily"].as_array().unwrap();
         assert_eq!(daily.len(), 7, "{name}: 빈 날도 채운다");
@@ -1141,10 +1153,10 @@ async fn admin_stats_users_and_detail() {
         assert_eq!(daily[6]["day"], today, "{name}: 오래된 날부터");
         let day_delta =
             |k: &str| daily[6][k].as_i64().unwrap() - before["daily"][6][k].as_i64().unwrap();
-        assert_eq!(day_delta("messages"), 5, "{name}");
-        assert_eq!(day_delta("bytes"), 1024, "{name}");
-        assert_eq!(day_delta("new_users"), 2, "{name}");
-        assert_eq!(day_delta("active_users"), 1, "{name}");
+        grew(name, day_delta("messages"), 5, "오늘 messages");
+        grew(name, day_delta("bytes"), 1024, "오늘 bytes");
+        grew(name, day_delta("new_users"), 2, "오늘 new_users");
+        grew(name, day_delta("active_users"), 1, "오늘 active_users");
 
         // 목록: 검색
         let (st, list) = srv
