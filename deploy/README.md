@@ -139,6 +139,19 @@ curl https://<기기>.<tailnet>.ts.net:8443/healthz      # ok
 
 시험 페이지: `https://<기기>.<tailnet>.ts.net:8443/dev/google` (`CF_DEV_PAGES=true`일 때). 시험이 끝나면 `CF_DEV_PAGES=false`.
 
+### 운영자 페이지 (F38)
+
+가입자 수·활성 사용자·플랫폼별 기기·일별 전송량을 브라우저로 본다. 허용 목록의 구글 계정으로만 들어온다.
+
+```bash
+echo "CF_ADMIN_EMAILS=you@gmail.com" >> deploy/.env.account   # 여러 명이면 쉼표로
+docker compose --env-file deploy/.env.account -f deploy/compose.account.yml up -d
+```
+
+- 주소: `https://<기기>.<tailnet>.ts.net:8443/admin`. 로그인 버튼은 1절의 웹 클라이언트를 쓰므로, 그 클라이언트의 승인된 JavaScript 원본에 이 주소(`https://<기기>.<tailnet>.ts.net:8443`)가 있어야 한다.
+- 비우면 `/admin`은 404다. 목록에서 빼면 이미 로그인한 운영자도 다음 요청부터 403이다(운영자 토큰은 1시간).
+- 클립보드 내용은 서버에 없어 이 페이지에서도 볼 수 없다. 사용자별로는 이메일·이름·기기 목록·사용량(횟수·바이트)까지 보인다.
+
 ### DB 클라이언트로 접속 (HeidiSQL·DBeaver 등)
 
 MariaDB는 Pi의 `127.0.0.1:3307`에만 열려 있다(포트는 `.env.account`의 `CF_DB_PORT`). 다른 PC에서는 `tailscale serve`로 **tailnet 안에서만** 연다. 공유기 포트포워딩이나 `0.0.0.0` 바인드는 하지 않는다(계정 이메일 등 개인정보가 있다).
@@ -176,6 +189,7 @@ docker compose --env-file deploy/.env.account -f deploy/compose.account.yml exec
 | `CF_ACCOUNT_GOOGLE_DESKTOP_CLIENT_SECRET` | 없음 | 그 클라이언트의 보안 비밀. ID와 함께 줘야 한다 (compose는 `CF_GOOGLE_DESKTOP_CLIENT_SECRET`) |
 | `CF_ACCOUNT_DEV_PAGES` | false | `/dev/google` 시험 페이지 (compose는 `CF_DEV_PAGES`) |
 | `CF_ACCOUNT_DEV_LOGIN` | false | 구글 없이 이메일만으로 계정을 만드는 `POST /v1/auth/dev` (개발 전용, compose는 `CF_DEV_LOGIN`) |
+| `CF_ACCOUNT_ADMIN_EMAILS` | 없음 | 운영자 페이지 `/admin`에 들어올 구글 계정 이메일(쉼표). 비우면 `/admin`을 열지 않는다 (compose는 `CF_ADMIN_EMAILS`, F38) |
 | `CF_ACCOUNT_USAGE_SECRET` | 없음 | 릴레이가 사용량을 보낼 때 쓰는 공유 비밀 (`POST /internal/usage`). 비우면 그 경로를 열지 않는다 (compose는 `CF_USAGE_SECRET`) |
 
 ## 릴레이가 접속 토큰을 확인하게 하기 (F33)

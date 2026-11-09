@@ -56,6 +56,8 @@ services:
       CF_ACCOUNT_DEV_LOGIN: "${CF_DEV_LOGIN:-false}"
       # 릴레이가 보내는 사용량을 받을 때 쓰는 공유 비밀 (F33). 비우면 받지 않는다
       CF_ACCOUNT_USAGE_SECRET: "${CF_USAGE_SECRET:-}"
+      # 운영자 페이지 /admin에 들어올 구글 계정 이메일 (쉼표로 여러 개, F38). 비우면 끈다
+      CF_ACCOUNT_ADMIN_EMAILS: "${CF_ADMIN_EMAILS:-}"
 
 # 릴레이가 같은 네트워크로 붙어 계정 서버에 닿는다 (compose.relay-auth.yml, F33)
 networks:

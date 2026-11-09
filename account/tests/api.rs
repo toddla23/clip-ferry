@@ -64,6 +64,7 @@ async fn start(store: Store, dev_login: bool) -> Server {
         dev_login,
         dev_pages: true,
         usage_secret: Some(USAGE_SECRET.into()),
+        admin_emails: vec![],
     })
     .await
 }
@@ -685,6 +686,7 @@ async fn start_desktop(token_url: &str) -> Server {
         dev_login: false,
         dev_pages: false,
         usage_secret: None,
+        admin_emails: vec![],
     });
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -838,6 +840,7 @@ async fn android_client_id_config() {
         dev_login: false,
         dev_pages: false,
         usage_secret: None,
+        admin_emails: vec![],
     })
     .await;
     let (st, v) = srv.get_auth("/v1/auth/google/android", None).await;
@@ -917,4 +920,316 @@ async fn link_ticket_is_signed_for_the_logged_in_account() {
             .verify_strict(&msg, &Signature::from_bytes(&sig))
             .expect("공개키로 확인되어야 한다");
     }
+}
+
+// ---------------------------------------------------------------- 운영자 통계 (F38)
+
+async fn start_admin(store: Store, admins: &[&str]) -> Server {
+    serve(AppState {
+        store,
+        signer: Signer::from_seed(&[42u8; 32]),
+        google: GoogleVerifier::new(vec![CLIENT.into()], static_google_keys()),
+        google_desktop: None,
+        google_android: None,
+        dev_login: false,
+        dev_pages: false,
+        usage_secret: Some(USAGE_SECRET.into()),
+        admin_emails: clip_ferry_account::admin::normalize_emails(admins),
+    })
+    .await
+}
+
+impl Server {
+    /// 구글로 운영자 로그인 → (상태, 응답)
+    async fn admin_login(&self, sub: &str) -> (u16, Value) {
+        self.post("/admin/api/session", json!({ "id_token": good_token(sub) }))
+            .await
+    }
+
+    async fn report_usage(&self, user_id: &str, messages: u64, bytes: u64) {
+        let r = self
+            .http
+            .post(format!("{}/internal/usage", self.base))
+            .bearer_auth(USAGE_SECRET)
+            .json(&json!({ "entries": [{ "user_id": user_id, "messages": messages, "bytes": bytes }] }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status().as_u16(), 200);
+    }
+}
+
+/// 테스트마다 다른 기기 ID (MariaDB에는 앞선 실행의 행이 남는다)
+fn new_device_id() -> String {
+    clip_ferry_account::random_id()
+}
+
+#[tokio::test]
+async fn admin_is_off_without_allow_list() {
+    let srv = start(Store::memory(), false).await;
+    let r = srv
+        .http
+        .get(format!("{}/admin", srv.base))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status().as_u16(), 404);
+    let (st, _) = srv
+        .post(
+            "/admin/api/session",
+            json!({ "id_token": good_token(&new_sub()) }),
+        )
+        .await;
+    assert_eq!(st, 404);
+    assert_eq!(srv.get_auth("/admin/api/stats", None).await.0, 404);
+}
+
+#[tokio::test]
+async fn admin_only_for_allow_listed_google_accounts() {
+    for (name, store) in stores().await {
+        let op = new_sub();
+        // 허용 목록은 대소문자를 가리지 않는다
+        let listed = format!("{}@EXAMPLE.com", op.to_uppercase());
+        let srv = start_admin(store, &[&listed]).await;
+
+        // 허용 목록 밖 구글 계정 → 403, 토큰 없음
+        let (st, body) = srv.admin_login(&new_sub()).await;
+        assert_eq!(st, 403, "{name}: {body}");
+        assert_eq!(body["error"], "not_admin");
+        assert!(body.get("token").is_none());
+
+        // 다른 앱용 ID 토큰 → 401
+        let mut c = google_claims(&op);
+        c["aud"] = json!("other-client");
+        let (st, _) = srv
+            .post(
+                "/admin/api/session",
+                json!({ "id_token": id_token(KEY_A, KID_A, &c) }),
+            )
+            .await;
+        assert_eq!(st, 401, "{name}");
+
+        // 이메일 미확인 → 403
+        let mut c = google_claims(&op);
+        c["email_verified"] = json!(false);
+        let (st, _) = srv
+            .post(
+                "/admin/api/session",
+                json!({ "id_token": id_token(KEY_A, KID_A, &c) }),
+            )
+            .await;
+        assert_eq!(st, 403, "{name}");
+
+        // 허용된 계정 → 운영자 토큰
+        let (st, body) = srv.admin_login(&op).await;
+        assert_eq!(st, 200, "{name}: {body}");
+        assert_eq!(body["email"], format!("{op}@example.com"));
+        assert_eq!(body["expires_in"], tokens::ADMIN_TTL_SECS);
+        let admin = s(&body, "token");
+        assert_eq!(
+            srv.get_auth("/admin/api/stats", Some(&admin)).await.0,
+            200,
+            "{name}"
+        );
+        assert_eq!(
+            srv.get_auth("/admin/api/users", Some(&admin)).await.0,
+            200,
+            "{name}"
+        );
+
+        // 운영자 토큰은 앱 API에 못 쓴다 (대상이 다르다)
+        assert_eq!(srv.get_auth("/v1/me", Some(&admin)).await.0, 401, "{name}");
+
+        // 토큰 없음·틀린 토큰·앱 접속 토큰 → 401
+        assert_eq!(
+            srv.get_auth("/admin/api/stats", None).await.0,
+            401,
+            "{name}"
+        );
+        assert_eq!(
+            srv.get_auth("/admin/api/stats", Some("x.y.z")).await.0,
+            401,
+            "{name}"
+        );
+        let (_, user) = srv.google_login(good_token(&new_sub())).await;
+        let access = s(&user, "access_token");
+        assert_eq!(
+            srv.get_auth("/admin/api/stats", Some(&access)).await.0,
+            401,
+            "{name}"
+        );
+        assert_eq!(
+            srv.get_auth("/admin/api/users", Some(&access)).await.0,
+            401,
+            "{name}"
+        );
+
+        // 서버 키로 서명됐어도 허용 목록 밖 이메일이면 403 (목록에서 빠진 운영자)
+        let (removed, _) = srv.state.signer.issue_admin("gone@example.com", now());
+        let (st, body) = srv.get_auth("/admin/api/stats", Some(&removed)).await;
+        assert_eq!(st, 403, "{name}: {body}");
+        assert_eq!(
+            srv.get_auth("/admin/api/users", Some(&removed)).await.0,
+            403,
+            "{name}"
+        );
+        let id = s(&user["user"], "id");
+        assert_eq!(
+            srv.get_auth(&format!("/admin/api/users/{id}"), Some(&removed))
+                .await
+                .0,
+            403,
+            "{name}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn admin_stats_users_and_detail() {
+    for (name, store) in stores().await {
+        let op = new_sub();
+        let srv = start_admin(store, &[&format!("{op}@example.com")]).await;
+        let (_, body) = srv.admin_login(&op).await;
+        let admin = s(&body, "token");
+        let (_, before) = srv.get_auth("/admin/api/stats?days=7", Some(&admin)).await;
+
+        // 사용자 둘: A는 기기 2대에 전송, B는 기기 1대에 전송 없음
+        let mark = clip_ferry_account::random_id();
+        let (_, a) = srv.google_login(good_token(&format!("sub-{mark}-a"))).await;
+        let (_, b) = srv.google_login(good_token(&format!("sub-{mark}-b"))).await;
+        let (a_id, b_id) = (s(&a["user"], "id"), s(&b["user"], "id"));
+        let (a_tok, b_tok) = (s(&a, "access_token"), s(&b, "access_token"));
+        srv.put_device(&a_tok, &new_device_id(), "A의 PC", "windows")
+            .await;
+        srv.put_device(&a_tok, &new_device_id(), "A의 폰", "android")
+            .await;
+        srv.put_device(&b_tok, &new_device_id(), "B의 폰", "android")
+            .await;
+        srv.report_usage(&a_id, 4, 1000).await;
+        srv.report_usage(&a_id, 1, 24).await;
+
+        let (st, after) = srv.get_auth("/admin/api/stats?days=7", Some(&admin)).await;
+        assert_eq!(st, 200, "{name}: {after}");
+        let delta = |k: &str| {
+            after["overview"][k].as_i64().unwrap() - before["overview"][k].as_i64().unwrap()
+        };
+        assert_eq!(delta("users"), 2, "{name}: {after}");
+        assert_eq!(delta("dau"), 1, "{name}: 전송한 계정만 활성");
+        assert_eq!(delta("mau"), 1, "{name}");
+        let platform = |v: &Value, p: &str, k: &str| {
+            v["overview"]["platforms"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|x| x["platform"] == p)
+                .map(|x| x[k].as_i64().unwrap())
+                .unwrap_or(0)
+        };
+        assert_eq!(
+            platform(&after, "android", "devices") - platform(&before, "android", "devices"),
+            2,
+            "{name}"
+        );
+        assert_eq!(
+            platform(&after, "windows", "seen_30d") - platform(&before, "windows", "seen_30d"),
+            1,
+            "{name}"
+        );
+        let daily = after["daily"].as_array().unwrap();
+        assert_eq!(daily.len(), 7, "{name}: 빈 날도 채운다");
+        let today = after["today"].as_i64().unwrap();
+        assert_eq!(daily[6]["day"], today, "{name}: 오래된 날부터");
+        let day_delta =
+            |k: &str| daily[6][k].as_i64().unwrap() - before["daily"][6][k].as_i64().unwrap();
+        assert_eq!(day_delta("messages"), 5, "{name}");
+        assert_eq!(day_delta("bytes"), 1024, "{name}");
+        assert_eq!(day_delta("new_users"), 2, "{name}");
+        assert_eq!(day_delta("active_users"), 1, "{name}");
+
+        // 목록: 검색
+        let (st, list) = srv
+            .get_auth(&format!("/admin/api/users?q={mark}"), Some(&admin))
+            .await;
+        assert_eq!(st, 200, "{name}: {list}");
+        assert_eq!(list["total"], 2, "{name}");
+        let users = list["users"].as_array().unwrap();
+        let row_a = users.iter().find(|u| u["id"] == a_id.as_str()).unwrap();
+        assert_eq!(row_a["device_count"], 2, "{name}");
+        assert_eq!(row_a["messages_30d"], 5, "{name}");
+        assert_eq!(row_a["bytes_30d"], 1024, "{name}");
+        assert_eq!(row_a["last_active_day"], today, "{name}");
+        assert!(
+            row_a.get("provider_sub").is_none(),
+            "{name}: 구글 sub는 내보내지 않는다"
+        );
+        let row_b = users.iter().find(|u| u["id"] == b_id.as_str()).unwrap();
+        assert_eq!(row_b["last_active_day"], Value::Null, "{name}");
+        // LIKE 특수 문자는 글자 그대로 찾는다
+        let (_, none) = srv
+            .get_auth("/admin/api/users?q=%25%25nobody_", Some(&admin))
+            .await;
+        assert_eq!(none["total"], 0, "{name}: % _ 는 와일드카드가 아니다");
+        let (_, all) = srv.get_auth("/admin/api/users", Some(&admin)).await;
+        assert!(all["total"].as_i64().unwrap() >= 2, "{name}");
+        assert!(all["users"].as_array().unwrap().len() <= 50, "{name}");
+
+        // 상세
+        let (st, d) = srv
+            .get_auth(&format!("/admin/api/users/{a_id}"), Some(&admin))
+            .await;
+        assert_eq!(st, 200, "{name}: {d}");
+        assert_eq!(d["user"]["email"], format!("sub-{mark}-a@example.com"));
+        assert_eq!(d["devices"].as_array().unwrap().len(), 2, "{name}");
+        assert_eq!(d["usage"][0]["messages"], 5, "{name}");
+        assert!(d["user"].get("provider_sub").is_none(), "{name}");
+        let missing = format!("/admin/api/users/{}", "f".repeat(32));
+        assert_eq!(srv.get_auth(&missing, Some(&admin)).await.0, 404, "{name}");
+        assert_eq!(
+            srv.get_auth("/admin/api/users/nothex", Some(&admin))
+                .await
+                .0,
+            404,
+            "{name}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn admin_page_is_locked_down() {
+    let srv = start_admin(Store::memory(), &["op@example.com"]).await;
+    let r = srv
+        .http
+        .get(format!("{}/admin", srv.base))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status().as_u16(), 200);
+    let csp = r.headers()["content-security-policy"]
+        .to_str()
+        .unwrap()
+        .to_string();
+    assert!(
+        csp.contains("script-src 'self' https://accounts.google.com/gsi/client;"),
+        "{csp}"
+    );
+    assert!(csp.contains("frame-ancestors 'none'"), "{csp}");
+    assert_eq!(r.headers()["cache-control"], "no-store");
+    let html = r.text().await.unwrap();
+    assert!(html.contains(&format!("data-client_id=\"{CLIENT}\"")));
+    assert!(html.contains("/admin/admin.js"));
+    let js = srv
+        .http
+        .get(format!("{}/admin/admin.js", srv.base))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(js.status().as_u16(), 200);
+    assert!(js.headers()["content-type"]
+        .to_str()
+        .unwrap()
+        .starts_with("text/javascript"));
+    assert!(
+        !js.text().await.unwrap().contains("innerHTML"),
+        "값은 textContent로만 넣는다"
+    );
 }

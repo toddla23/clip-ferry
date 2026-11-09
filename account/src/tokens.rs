@@ -15,6 +15,9 @@ pub const ISSUER: &str = "clip-ferry-account";
 /// 접속 토큰을 받는 쪽(릴레이)
 pub const AUDIENCE: &str = "clip-ferry-relay";
 pub const ACCESS_TTL_SECS: i64 = 60 * 60;
+/// 운영자 페이지 토큰을 받는 쪽(계정 서버 `/admin/api`, F38). 릴레이는 이 대상을 받지 않는다
+pub const ADMIN_AUDIENCE: &str = "clip-ferry-admin";
+pub const ADMIN_TTL_SECS: i64 = 60 * 60;
 pub const REFRESH_TTL_MS: i64 = 30 * 24 * 60 * 60 * 1000;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -107,11 +110,29 @@ impl Signer {
 
     /// 계정 `user_id`의 접속 토큰. 돌려주는 두 번째 값은 만료 시각(Unix 초).
     pub fn issue(&self, user_id: &str, now_secs: i64) -> (String, i64) {
-        let exp = now_secs + ACCESS_TTL_SECS;
+        self.encode(AUDIENCE, user_id, now_secs, ACCESS_TTL_SECS)
+    }
+
+    /// 접속 토큰 확인 (서명·발급자·대상·만료).
+    pub fn verify(&self, token: &str) -> Result<AccessClaims, TokenError> {
+        self.decode(token, AUDIENCE)
+    }
+
+    /// 운영자 페이지 토큰(F38). `sub`는 운영자 이메일(소문자). 접속 토큰과 대상이 달라 서로 쓸 수 없다.
+    pub fn issue_admin(&self, email: &str, now_secs: i64) -> (String, i64) {
+        self.encode(ADMIN_AUDIENCE, email, now_secs, ADMIN_TTL_SECS)
+    }
+
+    pub fn verify_admin(&self, token: &str) -> Result<AccessClaims, TokenError> {
+        self.decode(token, ADMIN_AUDIENCE)
+    }
+
+    fn encode(&self, aud: &str, sub: &str, now_secs: i64, ttl: i64) -> (String, i64) {
+        let exp = now_secs + ttl;
         let claims = AccessClaims {
             iss: ISSUER.into(),
-            aud: AUDIENCE.into(),
-            sub: user_id.into(),
+            aud: aud.into(),
+            sub: sub.into(),
             iat: now_secs,
             exp,
         };
@@ -121,11 +142,10 @@ impl Signer {
         (token, exp)
     }
 
-    /// 접속 토큰 확인 (서명·발급자·대상·만료).
-    pub fn verify(&self, token: &str) -> Result<AccessClaims, TokenError> {
+    fn decode(&self, token: &str, aud: &str) -> Result<AccessClaims, TokenError> {
         let mut v = Validation::new(Algorithm::EdDSA);
         v.set_issuer(&[ISSUER]);
-        v.set_audience(&[AUDIENCE]);
+        v.set_audience(&[aud]);
         v.set_required_spec_claims(&["exp", "iss", "aud", "sub"]);
         v.leeway = 30;
         jsonwebtoken::decode::<AccessClaims>(token, &self.decoding, &v)
@@ -179,6 +199,24 @@ mod tests {
         let c = s.verify(&t).unwrap();
         assert_eq!(c.sub, "abc");
         assert_eq!(c.aud, AUDIENCE);
+    }
+
+    #[test]
+    fn admin_and_access_tokens_do_not_mix() {
+        let s = signer();
+        let now = crate::now_ms() / 1000;
+        let (admin, exp) = s.issue_admin("op@example.com", now);
+        assert_eq!(exp, now + ADMIN_TTL_SECS);
+        assert_eq!(s.verify_admin(&admin).unwrap().sub, "op@example.com");
+        assert!(
+            s.verify(&admin).is_err(),
+            "운영자 토큰으로 릴레이·/v1 접속 불가"
+        );
+        let (access, _) = s.issue("abc", now);
+        assert!(
+            s.verify_admin(&access).is_err(),
+            "접속 토큰으로 운영자 API 불가"
+        );
     }
 
     #[test]

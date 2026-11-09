@@ -526,8 +526,9 @@ CLI 명령 예시는 `cf` = `cargo run -q -p clip-ferry-cli --` 의 줄임이다
 - **범위**: 계정 서버 `/admin`(운영자 구글 계정 허용 목록), 간단한 페이지: 가입자 수, 일·월 활성 사용자, 플랫폼별 기기 수, 일별 전송 수·바이트. 개별 사용자 조회는 이메일·기기 목록·사용량까지(내용 없음)
 - **범위 밖**: 결제·요금제(O-05)
 - **완료 조건**
-  - [ ] 허용 목록 밖 계정은 403
-- **사용자 확인 방법**: 구현 때 작성
+  - [x] 허용 목록 밖 계정은 403 (테스트 `admin_only_for_allow_listed_google_accounts`)
+- 구현 메모(D-023): 계정 서버 `admin` 모듈. `GET /admin`(페이지, 구글 로그인 버튼) → `POST /admin/api/session`(구글 ID 토큰 → 운영자 토큰 1시간, 대상 `clip-ferry-admin`) → `GET /admin/api/stats`·`/users`·`/users/{id}`. 허용 목록 `CF_ACCOUNT_ADMIN_EMAILS`(비면 404, 요청마다 다시 확인). 활성 = 그날 전송한 계정(`usage_daily`). 마이그레이션 0003(날짜 색인). 페이지는 CSP로 외부 스크립트를 구글 GIS만 허용, 값은 `textContent`로만
+- **사용자 확인 방법**: `todo/F38-확인.md` (Pi 계정 서버 + PC 브라우저, 실제 구글 로그인)
 
 ## F39. 계정 삭제 · 개인정보처리방침
 

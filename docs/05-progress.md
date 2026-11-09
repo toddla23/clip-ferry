@@ -47,7 +47,7 @@
 | F35 | Android 로그인 | F33 | 완료 | 실기기 확인 0~6 통과(Releases 배포 APK 위에 배포 키 release 빌드로 업데이트, 그룹 유지, 토큰 확인 릴레이 접속), 세 OS + `account (MariaDB)` CI 통과(PR #30). 확인 문서: `todo/F35-확인.md` |
 | F36 | iOS 로그인 (구글 + Apple) | F33, F25 | 대기 | |
 | F37 | 계정으로 기기 연결 | F34, F35 | 완료 | PR #31. SAS 확인 유지 + 키 봉인 후 공개(D-022) |
-| F38 | 운영자 통계 | F33 | 대기 | |
+| F38 | 운영자 통계 | F33 | 진행중 | 브랜치 `f38-operator-stats`. `/admin` + 구글 로그인 허용 목록(D-023) |
 | F39 | 계정 삭제 · 개인정보처리방침 | F34, F35 | 대기 | |
 | F40 | 공개 배포 (도메인 · 클라우드) | F32~F39, O-03, O-04 | 대기 | |
 | F41 | 데스크톱 · Android Apple 로그인 | F36, O-03 | 대기 | 웹 방식이라 도메인 필요 |
@@ -62,6 +62,7 @@
 
 새 항목을 위에 추가한다. 형식: `YYYY-MM-DD F00 — 한 줄`
 
+- 2026-11-09 F38 — 계정 서버 `/admin`(구글 로그인 → 허용 목록 → 운영자 토큰, 대상 `clip-ferry-admin`), 통계 API(가입자·DAU·MAU·플랫폼별 기기·일별 활성·신규·전송·바이트, 사용자 목록·상세), 마이그레이션 0003(날짜 색인), `CF_ACCOUNT_ADMIN_EMAILS`. D-023. 테스트: 계정 +5(허용 목록 밖 403, 토큰 대상 분리, 통계 증가분, 검색 LIKE 이스케이프, 페이지 CSP). MariaDB 질의는 CI에서 처음 돈다. 확인 문서 `todo/F38-확인.md`. 진행중
 - 2026-11-09 F37 — 완료 (PR #31 머지, CI 세 OS·MariaDB 통과, 사용자 승인)
 - 2026-11-09 F37 — 실기기 확인(데스크톱↔데스크톱 연결·무시·거절, 폰이 기존 기기로 PC-C를 받음, 폰이 계정 연결로 다시 참여, 양쪽 전송). 고친 것: 데스크톱 시작 시 교착(로그인된 프로필에서 `응답 없음`), CLI `InviterEvent::Reply` 미처리(CI clippy). 확인대기
 - 2026-11-08 F37 — 계정 서버 `POST /v1/link/ticket`(참여 확인서, 접속 토큰 키로 서명), 코어 `link`(계정 채널 `HKDF(user_id)`, 확인서 확인)·봉인 후 공개 페어링(`PairCommit`·`PairReveal`, SAS에 두 nonce)·`start_link_invite`/`start_link_join`·`Session::set_account_link`/`on_link_request`, 데스크톱(마법사 버튼·홈 화면 요청 카드·알림), FFI·Android(첫 화면 버튼·요청 카드·알림 채널). 03-protocol 4.4, D-022. 테스트: 코어 +10(중간자면 숫자 다름), 계정 +4, 릴레이 통합 3, 데스크톱 +1, FFI +3. `assembleDebug` 성공. 확인 문서 `todo/F37-확인.md`. 진행중

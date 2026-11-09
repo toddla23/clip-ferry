@@ -54,6 +54,54 @@ pub struct UsageDay {
     pub bytes: i64,
 }
 
+/// 운영자 통계(F38): 플랫폼별 기기 수.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct PlatformCount {
+    pub platform: String,
+    /// 등록된 기기 (지운 기기도 계정 서버에는 남는다)
+    pub devices: i64,
+    /// 그중 최근 30일 안에 접속한 기기
+    pub seen_30d: i64,
+}
+
+/// 운영자 통계: 하루 합계. 활성 = 그날 한 번이라도 전송한 계정(D-023).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct DayTotal {
+    pub day: i32,
+    pub active_users: i64,
+    pub new_users: i64,
+    pub messages: i64,
+    pub bytes: i64,
+}
+
+/// 운영자 통계: 전체 요약.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Overview {
+    pub users: i64,
+    /// 오늘(UTC) 전송한 계정 수
+    pub dau: i64,
+    /// 오늘 포함 최근 30일 안에 전송한 계정 수
+    pub mau: i64,
+    pub platforms: Vec<PlatformCount>,
+}
+
+/// 운영자 사용자 목록의 한 줄.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct UserSummary {
+    #[serde(flatten)]
+    pub user: User,
+    pub device_count: i64,
+    /// 오늘 포함 최근 30일
+    pub messages_30d: i64,
+    pub bytes_30d: i64,
+    /// 마지막으로 전송한 날 (없으면 null)
+    pub last_active_day: Option<i32>,
+}
+
+/// 운영자 목록 한 쪽의 최대 줄 수
+pub const ADMIN_PAGE: i64 = 50;
+const DAY_MS: i64 = 86_400_000;
+
 /// 갱신 토큰 교체 결과.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Rotate {
@@ -308,6 +356,61 @@ impl Store {
         }
     }
 
+    /// 운영자 요약. `today`는 UTC 일 번호, `now`는 밀리초.
+    pub async fn overview(&self, today: i32, now: i64) -> Result<Overview> {
+        let recent = now - 30 * DAY_MS;
+        match self {
+            Store::Memory(m) => Ok(m.overview(today, recent)),
+            Store::Maria(m) => m.overview(today, recent).await,
+        }
+    }
+
+    /// `from`~`to`(포함) 일별 합계. 빈 날도 0으로 채워 날짜 순으로 돌려준다.
+    pub async fn daily_totals(&self, from: i32, to: i32) -> Result<Vec<DayTotal>> {
+        let mut days: Vec<DayTotal> = (from..=to)
+            .map(|day| DayTotal {
+                day,
+                active_users: 0,
+                new_users: 0,
+                messages: 0,
+                bytes: 0,
+            })
+            .collect();
+        if days.is_empty() {
+            return Ok(days);
+        }
+        let (usage, signups) = match self {
+            Store::Memory(m) => m.daily_totals(from, to),
+            Store::Maria(m) => m.daily_totals(from, to).await?,
+        };
+        for (day, active, messages, bytes) in usage {
+            let d = &mut days[(day - from) as usize];
+            d.active_users = active;
+            d.messages = messages;
+            d.bytes = bytes;
+        }
+        for (day, n) in signups {
+            days[(day - from) as usize].new_users = n;
+        }
+        Ok(days)
+    }
+
+    /// 운영자 사용자 목록: 이메일·이름에 `query`가 든 계정(빈 문자열이면 전부), 최근 가입 순.
+    /// 돌려주는 첫 값은 조건에 맞는 전체 수.
+    pub async fn list_users(
+        &self,
+        query: &str,
+        offset: i64,
+        today: i32,
+    ) -> Result<(i64, Vec<UserSummary>)> {
+        let query = query.trim().to_lowercase();
+        let offset = offset.max(0);
+        match self {
+            Store::Memory(m) => Ok(m.list_users(&query, offset, today)),
+            Store::Maria(m) => m.list_users(&query, offset, today).await,
+        }
+    }
+
     /// 테스트용: 계정의 갱신 토큰 행에 저장된 값 (해시만 있어야 한다).
     #[doc(hidden)]
     pub async fn stored_refresh_values(&self, user_id: &str) -> Result<Vec<Vec<u8>>> {
@@ -440,6 +543,115 @@ impl MemStore {
         };
         g.devices.push((user_id.into(), d.clone()));
         Ok(d)
+    }
+
+    fn overview(&self, today: i32, recent: i64) -> Overview {
+        let g = self.lock();
+        let active = |from: i32| {
+            g.usage
+                .iter()
+                .filter(|((_, day), (messages, _))| *day > from && *day <= today && *messages > 0)
+                .map(|((u, _), _)| u)
+                .collect::<std::collections::HashSet<_>>()
+                .len() as i64
+        };
+        let mut platforms: std::collections::BTreeMap<String, PlatformCount> = Default::default();
+        for (_, d) in &g.devices {
+            let p = platforms
+                .entry(d.platform.clone())
+                .or_insert_with(|| PlatformCount {
+                    platform: d.platform.clone(),
+                    devices: 0,
+                    seen_30d: 0,
+                });
+            p.devices += 1;
+            if d.last_seen_ms >= recent {
+                p.seen_30d += 1;
+            }
+        }
+        Overview {
+            users: g.users.len() as i64,
+            dau: active(today - 1),
+            mau: active(today - 30),
+            platforms: platforms.into_values().collect(),
+        }
+    }
+
+    #[allow(clippy::type_complexity)]
+    fn daily_totals(&self, from: i32, to: i32) -> (Vec<(i32, i64, i64, i64)>, Vec<(i32, i64)>) {
+        let g = self.lock();
+        let mut usage: std::collections::BTreeMap<i32, (i64, i64, i64)> = Default::default();
+        for ((_, day), (messages, bytes)) in &g.usage {
+            if (from..=to).contains(day) {
+                let e = usage.entry(*day).or_default();
+                if *messages > 0 {
+                    e.0 += 1;
+                }
+                e.1 += messages;
+                e.2 += bytes;
+            }
+        }
+        let mut signups: std::collections::BTreeMap<i32, i64> = Default::default();
+        for u in g.users.values() {
+            let day = u.created_at_ms.div_euclid(DAY_MS) as i32;
+            if (from..=to).contains(&day) {
+                *signups.entry(day).or_default() += 1;
+            }
+        }
+        (
+            usage
+                .into_iter()
+                .map(|(d, (a, m, b))| (d, a, m, b))
+                .collect(),
+            signups.into_iter().collect(),
+        )
+    }
+
+    fn list_users(&self, query: &str, offset: i64, today: i32) -> (i64, Vec<UserSummary>) {
+        let g = self.lock();
+        let mut users: Vec<&User> = g
+            .users
+            .values()
+            .filter(|u| {
+                query.is_empty()
+                    || u.email.to_lowercase().contains(query)
+                    || u.name.to_lowercase().contains(query)
+            })
+            .collect();
+        users.sort_by(|a, b| {
+            b.created_at_ms
+                .cmp(&a.created_at_ms)
+                .then_with(|| a.id.cmp(&b.id))
+        });
+        let total = users.len() as i64;
+        let rows = users
+            .into_iter()
+            .skip(offset as usize)
+            .take(ADMIN_PAGE as usize)
+            .map(|u| {
+                let mut s = UserSummary {
+                    user: u.clone(),
+                    device_count: g.devices.iter().filter(|(id, _)| *id == u.id).count() as i64,
+                    messages_30d: 0,
+                    bytes_30d: 0,
+                    last_active_day: None,
+                };
+                for ((id, day), (messages, bytes)) in &g.usage {
+                    if *id != u.id {
+                        continue;
+                    }
+                    if *day > today - 30 && *day <= today {
+                        s.messages_30d += messages;
+                        s.bytes_30d += bytes;
+                    }
+                    if *messages > 0 {
+                        s.last_active_day = s.last_active_day.max(Some(*day));
+                    }
+                }
+                s
+            })
+            .collect();
+        (total, rows)
     }
 
     fn rotate_refresh(&self, old: &[u8; 32], new: &[u8; 32], now: i64, new_expires: i64) -> Rotate {
@@ -694,6 +906,157 @@ impl MariaStore {
         .await?;
         tx.commit().await?;
         Ok(Rotate::Rotated { user_id })
+    }
+
+    async fn overview(&self, today: i32, recent: i64) -> Result<Overview> {
+        let users: i64 = sqlx::query("SELECT COUNT(*) AS n FROM users")
+            .fetch_one(&self.pool)
+            .await?
+            .try_get("n")?;
+        let active = |from: i32| {
+            sqlx::query(
+                "SELECT COUNT(DISTINCT user_id) AS n FROM usage_daily \
+                 WHERE day > ? AND day <= ? AND messages > 0",
+            )
+            .bind(from)
+            .bind(today)
+        };
+        let dau: i64 = active(today - 1)
+            .fetch_one(&self.pool)
+            .await?
+            .try_get("n")?;
+        let mau: i64 = active(today - 30)
+            .fetch_one(&self.pool)
+            .await?
+            .try_get("n")?;
+        // SUM은 DECIMAL로 오므로 정수로 바꾼다
+        let rows = sqlx::query(
+            "SELECT platform, COUNT(*) AS devices, \
+             CAST(COALESCE(SUM(last_seen_ms >= ?), 0) AS SIGNED) AS seen \
+             FROM devices GROUP BY platform ORDER BY platform",
+        )
+        .bind(recent)
+        .fetch_all(&self.pool)
+        .await?;
+        let platforms = rows
+            .iter()
+            .map(|r| {
+                Ok(PlatformCount {
+                    platform: r.try_get("platform")?,
+                    devices: r.try_get("devices")?,
+                    seen_30d: r.try_get("seen")?,
+                })
+            })
+            .collect::<Result<_>>()?;
+        Ok(Overview {
+            users,
+            dau,
+            mau,
+            platforms,
+        })
+    }
+
+    #[allow(clippy::type_complexity)]
+    async fn daily_totals(
+        &self,
+        from: i32,
+        to: i32,
+    ) -> Result<(Vec<(i32, i64, i64, i64)>, Vec<(i32, i64)>)> {
+        let rows = sqlx::query(
+            "SELECT day, COUNT(DISTINCT CASE WHEN messages > 0 THEN user_id END) AS active, \
+             CAST(SUM(messages) AS SIGNED) AS messages, CAST(SUM(bytes) AS SIGNED) AS bytes \
+             FROM usage_daily WHERE day >= ? AND day <= ? GROUP BY day",
+        )
+        .bind(from)
+        .bind(to)
+        .fetch_all(&self.pool)
+        .await?;
+        let usage = rows
+            .iter()
+            .map(|r| {
+                Ok((
+                    r.try_get("day")?,
+                    r.try_get("active")?,
+                    r.try_get("messages")?,
+                    r.try_get("bytes")?,
+                ))
+            })
+            .collect::<Result<_>>()?;
+        let rows = sqlx::query(
+            "SELECT CAST(created_at_ms DIV ? AS SIGNED) AS day, COUNT(*) AS n FROM users \
+             WHERE created_at_ms >= ? AND created_at_ms < ? GROUP BY day",
+        )
+        .bind(DAY_MS)
+        .bind(from as i64 * DAY_MS)
+        .bind((to as i64 + 1) * DAY_MS)
+        .fetch_all(&self.pool)
+        .await?;
+        let signups = rows
+            .iter()
+            .map(|r| Ok((r.try_get::<i64, _>("day")? as i32, r.try_get("n")?)))
+            .collect::<Result<_>>()?;
+        Ok((usage, signups))
+    }
+
+    async fn list_users(
+        &self,
+        query: &str,
+        offset: i64,
+        today: i32,
+    ) -> Result<(i64, Vec<UserSummary>)> {
+        // LIKE의 특수 문자를 글자 그대로 찾게 한다 (기본 이스케이프 문자는 \)
+        let pattern = format!(
+            "%{}%",
+            query
+                .replace('\\', "\\\\")
+                .replace('%', "\\%")
+                .replace('_', "\\_")
+        );
+        let total: i64 = sqlx::query(
+            "SELECT COUNT(*) AS n FROM users WHERE ? = '' OR email LIKE ? OR name LIKE ?",
+        )
+        .bind(query)
+        .bind(&pattern)
+        .bind(&pattern)
+        .fetch_one(&self.pool)
+        .await?
+        .try_get("n")?;
+        let rows = sqlx::query(&format!(
+            "SELECT {USER_COLUMNS}, \
+             (SELECT COUNT(*) FROM devices d WHERE d.user_id = users.id) AS device_count, \
+             (SELECT CAST(COALESCE(SUM(x.messages), 0) AS SIGNED) FROM usage_daily x \
+              WHERE x.user_id = users.id AND x.day > ? AND x.day <= ?) AS messages_30d, \
+             (SELECT CAST(COALESCE(SUM(x.bytes), 0) AS SIGNED) FROM usage_daily x \
+              WHERE x.user_id = users.id AND x.day > ? AND x.day <= ?) AS bytes_30d, \
+             (SELECT MAX(x.day) FROM usage_daily x \
+              WHERE x.user_id = users.id AND x.messages > 0) AS last_active_day \
+             FROM users WHERE ? = '' OR email LIKE ? OR name LIKE ? \
+             ORDER BY created_at_ms DESC, id LIMIT ? OFFSET ?"
+        ))
+        .bind(today - 30)
+        .bind(today)
+        .bind(today - 30)
+        .bind(today)
+        .bind(query)
+        .bind(&pattern)
+        .bind(&pattern)
+        .bind(ADMIN_PAGE)
+        .bind(offset)
+        .fetch_all(&self.pool)
+        .await?;
+        let users = rows
+            .iter()
+            .map(|r| {
+                Ok(UserSummary {
+                    user: user_from_row(r)?,
+                    device_count: r.try_get("device_count")?,
+                    messages_30d: r.try_get("messages_30d")?,
+                    bytes_30d: r.try_get("bytes_30d")?,
+                    last_active_day: r.try_get("last_active_day")?,
+                })
+            })
+            .collect::<Result<_>>()?;
+        Ok((total, users))
     }
 
     async fn revoke_family_of(&self, hash: &[u8; 32]) -> Result<()> {

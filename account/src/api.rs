@@ -16,6 +16,7 @@
 //! | `POST /internal/usage` `{entries: [{user_id, messages, bytes}]}` | 릴레이가 보내는 사용량 (Bearer 공유 비밀, F33) |
 //! | `POST /v1/auth/dev` `{email, name}` | 개발용 로그인 (`--dev-login`일 때만) |
 //! | `GET /dev/google` | 구글 로그인 시험 페이지 (`--dev-pages`일 때만) |
+//! | `/admin…` | 운영자 통계 (F38, `admin` 모듈. 허용 목록이 있을 때만) |
 //!
 //! 오류 응답은 `{"error": "<코드>"}`. 토큰·이메일은 로그에 남기지 않는다.
 
@@ -51,6 +52,18 @@ pub struct AppState {
     pub dev_pages: bool,
     /// 릴레이 사용량 보고(`POST /internal/usage`)의 공유 비밀. 없으면 그 경로를 열지 않는다.
     pub usage_secret: Option<String>,
+    /// 운영자 구글 계정 이메일 허용 목록(소문자, F38). 비면 `/admin`을 열지 않는다.
+    /// `admin::normalize_emails`로 만든다.
+    pub admin_emails: Vec<String>,
+}
+
+impl AppState {
+    /// 웹 페이지의 구글 로그인 버튼에 쓸 "웹 애플리케이션" 클라이언트 ID.
+    pub fn web_client_id(&self) -> Option<String> {
+        self.google_android
+            .clone()
+            .or_else(|| self.google.client_ids().first().cloned())
+    }
 }
 
 pub fn router(state: Arc<AppState>) -> Router {
@@ -79,6 +92,9 @@ pub fn router(state: Arc<AppState>) -> Router {
     if state.dev_pages {
         r = r.route("/dev/google", get(dev_google_page));
     }
+    if !state.admin_emails.is_empty() {
+        r = r.merge(crate::admin::routes());
+    }
     r.layer(DefaultBodyLimit::max(16 * 1024)).with_state(state)
 }
 
@@ -91,13 +107,13 @@ pub struct ApiError {
 }
 
 impl ApiError {
-    fn new(status: StatusCode, code: &'static str) -> Self {
+    pub(crate) fn new(status: StatusCode, code: &'static str) -> Self {
         ApiError { status, code }
     }
-    fn unauthorized() -> Self {
+    pub(crate) fn unauthorized() -> Self {
         Self::new(StatusCode::UNAUTHORIZED, "unauthorized")
     }
-    fn bad(code: &'static str) -> Self {
+    pub(crate) fn bad(code: &'static str) -> Self {
         Self::new(StatusCode::BAD_REQUEST, code)
     }
 }
@@ -519,7 +535,7 @@ async fn dev_google_page(State(s): State<Arc<AppState>>) -> Html<String> {
     Html(include_str!("dev_google.html").replace("{{CLIENT_ID}}", &html_escape(&client_id)))
 }
 
-fn html_escape(s: &str) -> String {
+pub(crate) fn html_escape(s: &str) -> String {
     s.replace('&', "&amp;")
         .replace('<', "&lt;")
         .replace('>', "&gt;")
