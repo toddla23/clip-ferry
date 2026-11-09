@@ -386,7 +386,10 @@ impl Shell {
                 Ok(session) => {
                     let session = Arc::new(session);
                     session.set_account_link(inner.account_link.clone());
-                    self.listen_account(&session);
+                    // inner를 잡은 채라 listen_account 안에서 다시 잠그지 않는다.
+                    if inner.account_link.is_none() {
+                        self.listen_account(&session);
+                    }
                     inner.session = Some(session);
                     inner.connection = Connection::Reconnecting;
                     inner.error = None;
@@ -822,10 +825,8 @@ impl Shell {
     // ------------------------------------------------------------ 계정 연결 (F37)
 
     /// 세션이 계정 채널을 듣게 한다. 계정 서버에 닿지 않으면 잠시 뒤 다시 시도한다.
+    /// `inner` 잠금을 잡은 채로 불려도 된다(여기서는 잠그지 않는다).
     fn listen_account(self: &Arc<Self>, session: &Arc<Session>) {
-        if self.inner.lock().unwrap().account_link.is_some() {
-            return;
-        }
         let weak = Arc::downgrade(self);
         let target = Arc::downgrade(session);
         tauri::async_runtime::spawn(async move {
