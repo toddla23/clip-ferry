@@ -121,7 +121,29 @@ fn base(url: &str) -> String {
     url.trim().trim_end_matches('/').to_string()
 }
 
+/// 계정 서버가 알려 주는 릴레이 주소 (F43, `GET /v1/config`). 못 받거나 없으면 `None`.
+pub async fn server_relay_url(http: &reqwest::Client, account_url: &str) -> Option<String> {
+    #[derive(Deserialize)]
+    struct AppConfig {
+        relay_url: Option<String>,
+    }
+    let resp = http
+        .get(format!("{}/v1/config", base(account_url)))
+        .send()
+        .await
+        .ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+    resp.json::<AppConfig>().await.ok()?.relay_url
+}
+
 impl Account {
+    /// 계정 서버에 쓰는 HTTP 클라이언트 (시간 제한 15초)
+    pub fn http(&self) -> &reqwest::Client {
+        &self.http
+    }
+
     /// 보안 저장소에 로그인 정보가 있으면 읽어 둔다.
     pub fn new(secrets: Box<dyn SecretStore>) -> Self {
         let saved = secrets
@@ -318,7 +340,7 @@ impl Account {
             .map_err(|_| "먼저 로그인하세요".to_string())?;
         let token = self.token().await.map_err(|e| match e {
             TokenError::SignedOut => "로그인이 만료되었습니다. 다시 로그인하세요".to_string(),
-            TokenError::Unavailable => format!("계정 서버({url})에 연결하지 못했습니다"),
+            TokenError::Unavailable => "서버에 연결하지 못했습니다".to_string(),
         })?;
         let resp = self
             .http
@@ -331,7 +353,7 @@ impl Account {
             }))
             .send()
             .await
-            .map_err(|_| format!("계정 서버({url})에 연결하지 못했습니다"))?;
+            .map_err(|_| "서버에 연결하지 못했습니다".to_string())?;
         match resp.status().as_u16() {
             200 => {}
             404 => return Err("계정 서버가 계정 연결을 받지 않습니다 (예전 버전)".into()),
@@ -396,7 +418,7 @@ impl Account {
         open: impl FnOnce(&str) -> Result<(), String>,
     ) -> Result<Profile, String> {
         let account_url = base(account_url);
-        let unreachable = |_| format!("계정 서버({account_url})에 연결하지 못했습니다");
+        let unreachable = |_| "서버에 연결하지 못했습니다".to_string();
         let resp = self
             .http
             .get(format!("{account_url}/v1/auth/google/desktop"))
@@ -460,7 +482,7 @@ impl Account {
             .json(&serde_json::json!({ "email": email.trim(), "name": "" }))
             .send()
             .await
-            .map_err(|_| format!("계정 서버({account_url})에 연결하지 못했습니다"))?;
+            .map_err(|_| "서버에 연결하지 못했습니다".to_string())?;
         if resp.status().as_u16() == 404 {
             return Err("계정 서버가 개발용 로그인을 받지 않습니다 (--dev-login)".into());
         }
@@ -821,6 +843,10 @@ mod tests {
     use std::sync::Arc;
 
     async fn account_server() -> String {
+        account_server_with_relay(None).await
+    }
+
+    async fn account_server_with_relay(relay_url: Option<&str>) -> String {
         use clip_ferry_account::api::{router, AppState};
         use clip_ferry_account::google::{GoogleVerifier, KeySource};
         let state = Arc::new(AppState {
@@ -833,11 +859,26 @@ mod tests {
             dev_pages: false,
             usage_secret: None,
             admin_emails: vec![],
+            relay_url: relay_url.map(str::to_string),
         });
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         tokio::spawn(async move { axum::serve(listener, router(state)).await.unwrap() });
         format!("http://{addr}")
+    }
+
+    /// 릴레이 주소는 계정 서버가 알려 준다 (F43). 없거나 서버에 닿지 않으면 `None`.
+    #[tokio::test]
+    async fn relay_url_comes_from_the_account_server() {
+        let http = reqwest::Client::new();
+        let url = account_server_with_relay(Some("wss://relay.example.com")).await;
+        assert_eq!(
+            server_relay_url(&http, &format!("{url}/")).await.as_deref(),
+            Some("wss://relay.example.com")
+        );
+        let url = account_server().await;
+        assert_eq!(server_relay_url(&http, &url).await, None);
+        assert_eq!(server_relay_url(&http, "http://127.0.0.1:9").await, None);
     }
 
     #[tokio::test]

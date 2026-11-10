@@ -181,6 +181,8 @@ pub struct AppView {
     pub login_message: Option<String>,
     /// 개발용 로그인(이메일만) 칸을 보인다 (디버그 빌드)
     pub dev_login: bool,
+    /// 서버 주소 칸을 보인다 (디버그 빌드이거나 사용자가 켰을 때, F43)
+    pub show_server_settings: bool,
     /// 같은 계정의 새 기기가 보낸 참여 요청 (F37)
     pub link_request: Option<LinkRequestView>,
 }
@@ -338,6 +340,7 @@ mod tests {
             "loginBusy",
             "loginMessage",
             "devLogin",
+            "showServerSettings",
         ] {
             assert!(json.get(key).is_some(), "{key}");
         }

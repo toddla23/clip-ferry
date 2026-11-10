@@ -56,12 +56,14 @@
 | F29 | 로컬 클립보드 내역 | - | 대기 | 착수 전 재합의 |
 | F30 | 받을 기기 지정 전송 | - | 대기 | 착수 전 재합의 |
 | F31 | 데스크톱 배포 패키지 | - | 완료 | 1단계: GitHub Releases 배포 워크플로(데스크톱 3 OS + Android 서명 APK), `v0.1.0` 배포, 폰·PC에 설치해 동기화 확인, 문서 `docs/07-release.md`. 코드 서명·공증·자동 업데이트는 후속(남은 항목은 04-features M6). 확인 문서: `todo/F31-확인.md` |
+| F43 | 앱 기본 서버 주소 · 주소 숨기기 | F40 1단계 | 진행중 | 배포 빌드 기본 계정 서버 = Azure 이름, 릴레이는 계정 서버 `/v1/config`가 알려 줌, 주소 칸 숨김(제목 7번). D-026 |
 | F42 | Android 떠 있는 보내기 버튼 | F18 | 대기 | 사용자 요청(2026-11-08): 카카오톡·디스코드는 텍스트 선택 메뉴에 `PC로 보내기`가 안 나옴. 착수 전 재합의 |
 
 ## 작업 로그
 
 새 항목을 위에 추가한다. 형식: `YYYY-MM-DD F00 — 한 줄`
 
+- 2026-11-10 F43 — 시작 (브랜치 `f43-default-server`, F40 완료 커밋 위). 계정 서버 `GET /v1/config`(`CF_ACCOUNT_RELAY_URL`, compose.cloud는 `wss://${CF_DOMAIN}`), 데스크톱·Android 배포 빌드 기본 주소, 계정 서버에서 릴레이 주소 받기(직접 넣지 않았을 때), 주소 칸·문구 숨김(제목 7번), 오류 문구에서 주소 뺌. 테스트: 계정 +1, 데스크톱 +1, FFI +1. Android `assembleDebug`·`assembleRelease` 성공(BuildConfig 기본 주소 확인). Images 워크플로가 `f[0-9]*` 브랜치도 올림. D-026
 - 2026-11-10 F40 — 1단계 완료 (PR #34 머지, CI 통과, 사용자 승인). 2단계(도메인·앱 기본 주소·홈페이지·프로덕션)는 착수 때 합의
 - 2026-11-10 F40 — 서버 배포 확인(사용자): Pi DB 이전(users 2), 밖에서 `wss://`·`https://` ok, `/internal` 404, DB·내부 포트 닫힘, Tailscale 끄고 PC·폰(LTE) 텍스트·이미지 동기화, 운영자 페이지 전송 수 증가, 백업 → Pi 가져가기 → 빈 DB 복원(users 2·devices 15), VM 재부팅 후 복구. 고친 것: VM 사용자 이름(`jonghyeok`) 반영, 80 포트 규칙 누락. 확인대기
 - 2026-11-10 F40 — VM(Japan East, B2ts v2, 크레딧) 만들고 포트까지(사용자). 학생 구독은 허용 지역 5곳뿐이고 어디서도 무료 크기 불가. SSH는 Tailscale 없이 어디서든 키로만(사용자 결정). 배포 코드: `images.yml`(GHCR, amd64), `deploy/compose.cloud.yml`·`Caddyfile`(검증 통과)·`env.cloud.example`, 백업 `backup.sh`·`backup-send.sh`·`pull-backup.sh`. 확인 문서 6절(배포·Pi DB 이전·앱 전환·백업·복원·재부팅)

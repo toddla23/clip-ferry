@@ -190,6 +190,7 @@ docker compose --env-file deploy/.env.account -f deploy/compose.account.yml exec
 | `CF_ACCOUNT_DEV_PAGES` | false | `/dev/google` 시험 페이지 (compose는 `CF_DEV_PAGES`) |
 | `CF_ACCOUNT_DEV_LOGIN` | false | 구글 없이 이메일만으로 계정을 만드는 `POST /v1/auth/dev` (개발 전용, compose는 `CF_DEV_LOGIN`) |
 | `CF_ACCOUNT_ADMIN_EMAILS` | 없음 | 운영자 페이지 `/admin`에 들어올 구글 계정 이메일(쉼표). 비우면 `/admin`을 열지 않는다 (compose는 `CF_ADMIN_EMAILS`, F38) |
+| `CF_ACCOUNT_RELAY_URL` | 없음 | 앱에 알려 줄 릴레이 주소(`GET /v1/config`, F43). 앱은 계정 서버 주소만 내장한다. `compose.cloud.yml`은 `wss://${CF_DOMAIN}` |
 | `CF_ACCOUNT_USAGE_SECRET` | 없음 | 릴레이가 사용량을 보낼 때 쓰는 공유 비밀 (`POST /internal/usage`). 비우면 그 경로를 열지 않는다 (compose는 `CF_USAGE_SECRET`) |
 
 ## 릴레이가 접속 토큰을 확인하게 하기 (F33)

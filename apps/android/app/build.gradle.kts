@@ -34,9 +34,22 @@ android {
     }
 
     buildTypes {
+        // 기본 서버 (F43). 디버그는 에뮬레이터에서 본 PC의 개발 서버, 배포는 공개 서버.
+        // 배포 값은 빌드 때 환경 변수 CF_DEFAULT_ACCOUNT_URL·CF_DEFAULT_RELAY_URL로 바꿀 수 있다.
+        // 릴레이 주소는 로그인할 때 계정 서버(/v1/config)에서 받아 바꾸므로 여기 값은 처음 한 번만 쓴다.
+        debug {
+            buildConfigField("String", "DEFAULT_ACCOUNT_URL", "\"http://10.0.2.2:8788\"")
+            buildConfigField("String", "DEFAULT_RELAY_URL", "\"ws://10.0.2.2:8787\"")
+        }
         release {
             isMinifyEnabled = false
             signingConfig = signingConfigs.findByName("release") ?: signingConfigs.getByName("debug")
+            val account = System.getenv("CF_DEFAULT_ACCOUNT_URL")?.takeIf { it.isNotBlank() }
+                ?: "https://clipferry.japaneast.cloudapp.azure.com:8443"
+            val relay = System.getenv("CF_DEFAULT_RELAY_URL")?.takeIf { it.isNotBlank() }
+                ?: "wss://clipferry.japaneast.cloudapp.azure.com"
+            buildConfigField("String", "DEFAULT_ACCOUNT_URL", "\"$account\"")
+            buildConfigField("String", "DEFAULT_RELAY_URL", "\"$relay\"")
         }
     }
 

@@ -691,6 +691,13 @@ impl ClipFerryClient {
         self.account.is_signed_in()
     }
 
+    /// 계정 서버가 알려 주는 릴레이 주소 (F43). 못 받으면 `None`이고 셸은 저장해 둔 주소를 쓴다.
+    /// 네트워크를 쓰므로 메인 스레드가 아닌 곳에서 부른다.
+    pub fn server_relay_url(&self, account_url: String) -> Option<String> {
+        self.runtime
+            .block_on(self.account.server_relay_url(&account_url))
+    }
+
     /// 구글 로그인 창(Android Credential Manager의 `serverClientId`)에 넘길 웹 클라이언트 ID를
     /// 계정 서버에서 받는다. 네트워크를 쓰므로 메인 스레드가 아닌 곳에서 부른다.
     pub fn google_client_id(&self, account_url: String) -> Result<String, FfiError> {
@@ -1034,6 +1041,7 @@ mod tests {
                 dev_pages: false,
                 usage_secret: None,
                 admin_emails: vec![],
+                relay_url: Some("wss://relay.example.com".into()),
             };
             let app = router(Arc::new(state));
             let url = rt.block_on(async {
@@ -1044,6 +1052,20 @@ mod tests {
             });
             AccountServer { rt, url }
         })
+    }
+
+    /// 릴레이 주소는 계정 서버가 알려 준다 (F43). 서버에 닿지 않으면 `None`.
+    #[test]
+    fn relay_url_comes_from_the_account_server() {
+        let phone = signed_out_phone("폰", false);
+        assert_eq!(
+            phone.client.server_relay_url(account_server().url.clone()),
+            Some("wss://relay.example.com".to_string())
+        );
+        assert_eq!(
+            phone.client.server_relay_url("http://127.0.0.1:9".into()),
+            None
+        );
     }
 
     /// 로그인하지 않은 폰

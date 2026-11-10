@@ -4,6 +4,7 @@
 //! |---|---|
 //! | `GET /healthz` | 살아 있음 |
 //! | `GET /v1/keys` | 접속 토큰 공개키(JWKS). 릴레이가 읽는다 |
+//! | `GET /v1/config` | 앱이 쓸 서버 설정 `{relay_url}` (F43. 앱은 계정 서버 주소만 알고 릴레이 주소는 여기서 받는다) |
 //! | `POST /v1/auth/google` `{id_token}` | 구글 ID 토큰 → 계정 + 토큰 |
 //! | `GET /v1/auth/google/desktop` | 데스크톱 앱이 쓸 구글 클라이언트 ID `{client_id}` (F34) |
 //! | `POST /v1/auth/google/code` `{code, code_verifier, redirect_uri}` | 데스크톱 인가 코드 → 계정 + 토큰 (F34, D-020) |
@@ -56,6 +57,9 @@ pub struct AppState {
     /// 운영자 구글 계정 이메일 허용 목록(소문자, F38). 비면 `/admin`을 열지 않는다.
     /// `admin::normalize_emails`로 만든다.
     pub admin_emails: Vec<String>,
+    /// 앱에 알려 줄 릴레이 주소(`ws://`·`wss://`, F43). 없으면 `/v1/config`의 `relay_url`이 `null`이고
+    /// 앱은 저장해 둔 값이나 내장 기본값을 쓴다.
+    pub relay_url: Option<String>,
 }
 
 impl AppState {
@@ -71,6 +75,7 @@ pub fn router(state: Arc<AppState>) -> Router {
     let mut r = Router::new()
         .route("/healthz", get(|| async { "ok" }))
         .route("/v1/keys", get(keys))
+        .route("/v1/config", get(app_config))
         .route("/v1/auth/google", post(auth_google))
         .route("/v1/auth/google/desktop", get(google_desktop_config))
         .route("/v1/auth/google/code", post(auth_google_code))
@@ -222,6 +227,11 @@ async fn auth_google(
         picture_url: g.picture_url,
     };
     login(&s, &who).await
+}
+
+/// 앱이 로그인 전에도 읽는 서버 설정 (F43). 비밀은 없다.
+async fn app_config(State(s): State<Arc<AppState>>) -> Json<serde_json::Value> {
+    Json(serde_json::json!({ "relay_url": s.relay_url }))
 }
 
 async fn google_desktop_config(

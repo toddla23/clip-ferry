@@ -4,9 +4,25 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-pub const DEFAULT_RELAY: &str = "ws://127.0.0.1:8787";
-/// 계정 서버 기본 주소 (개발용. 공개 서버 주소는 F40에서 정한다)
-pub const DEFAULT_ACCOUNT: &str = "http://127.0.0.1:8788";
+/// 기본 서버 (F43). 배포 빌드는 공개 서버, 디버그 빌드는 이 PC의 개발 서버.
+/// 배포 빌드의 값은 빌드 때 `CF_DEFAULT_ACCOUNT_URL`·`CF_DEFAULT_RELAY_URL`로 바꿀 수 있다.
+/// 릴레이 주소는 로그인할 때 계정 서버의 `/v1/config`에서 받아 바꾸므로, 여기 값은 처음 한 번만 쓴다.
+pub const DEFAULT_RELAY: &str = if cfg!(debug_assertions) {
+    "ws://127.0.0.1:8787"
+} else {
+    match option_env!("CF_DEFAULT_RELAY_URL") {
+        Some(v) => v,
+        None => "wss://clipferry.japaneast.cloudapp.azure.com",
+    }
+};
+pub const DEFAULT_ACCOUNT: &str = if cfg!(debug_assertions) {
+    "http://127.0.0.1:8788"
+} else {
+    match option_env!("CF_DEFAULT_ACCOUNT_URL") {
+        Some(v) => v,
+        None => "https://clipferry.japaneast.cloudapp.azure.com:8443",
+    }
+};
 
 /// 개발용 프로필 이름(`CF_DESKTOP_PROFILE`). 영문·숫자·`-`·`_`만 허용하고, 아니면 무시한다.
 pub fn dev_profile() -> Option<String> {
@@ -38,6 +54,12 @@ pub struct Settings {
     /// 다른 기기에서 온 내용을 클립보드에 쓴다 (기본: 예).
     #[serde(default = "yes")]
     pub receive_enabled: bool,
+    /// 사용자가 릴레이 주소를 직접 넣었다 (F43). 아니면 계정 서버가 알려 주는 주소로 바꾼다.
+    #[serde(default)]
+    pub relay_custom: bool,
+    /// 배포 빌드에서도 서버 주소 칸을 보인다 (제목을 7번 눌러 켠다, F43).
+    #[serde(default)]
+    pub show_server: bool,
 }
 
 fn yes() -> bool {
@@ -59,6 +81,8 @@ impl Default for Settings {
             sync_sensitive: true,
             send_enabled: true,
             receive_enabled: true,
+            relay_custom: false,
+            show_server: false,
         }
     }
 }
@@ -193,6 +217,8 @@ mod tests {
             sync_sensitive: false,
             send_enabled: false,
             receive_enabled: true,
+            relay_custom: true,
+            show_server: true,
         };
         save(dir.path(), &s).unwrap();
         assert_eq!(load(dir.path()), s);
@@ -209,6 +235,8 @@ mod tests {
         let s = load(dir.path());
         assert_eq!(s.relay_url, "ws://10.0.0.5:9000");
         assert!(s.sync_sensitive && s.send_enabled && s.receive_enabled);
+        // 예전 파일의 릴레이 주소는 계정 서버가 알려 주는 값으로 바뀔 수 있고, 주소 칸은 숨긴다 (F43)
+        assert!(!s.relay_custom && !s.show_server);
         assert!(
             validate_account_url(&s.account_url).is_ok(),
             "계정 서버 주소는 기본값"

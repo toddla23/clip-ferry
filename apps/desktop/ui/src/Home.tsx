@@ -2,6 +2,7 @@ import { useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import Devices from "./Devices";
 import { CONNECTION_LABEL, type AppView } from "./types";
+import { useServerReveal } from "./useServerReveal";
 
 export default function Home({
   view,
@@ -12,6 +13,7 @@ export default function Home({
 }) {
   const [relay, setRelay] = useState(view.relayUrl);
   const [message, setMessage] = useState<string | null>(null);
+  const reveal = useServerReveal(view, onView);
 
   // 명령을 부르고 결과 상태를 반영한다. 실패하면 메시지를 보여 준다.
   async function call(cmd: string, args?: Record<string, unknown>, ok?: string) {
@@ -28,7 +30,7 @@ export default function Home({
     <main>
       <header>
         <span className={`dot ${view.paused ? "paused" : view.connection}`} />
-        <h1 data-testid="status">
+        <h1 data-testid="status" onClick={reveal}>
           {view.paused ? "일시정지" : CONNECTION_LABEL[view.connection]}
         </h1>
         {view.paused && (
@@ -133,13 +135,14 @@ export default function Home({
             일시정지
           </button>
         )}
+        {view.showServerSettings && (
         <label>
-          릴레이 주소
+          릴레이 주소 (비우고 저장하면 계정 서버가 알려 주는 주소)
           <div className="row">
             <input
               value={relay}
               onChange={(e) => setRelay(e.target.value)}
-              placeholder="ws://127.0.0.1:8787"
+              placeholder="wss://<서버>"
               spellCheck={false}
             />
             <button onClick={() => call("set_relay_url", { url: relay }, "저장했습니다")}>
@@ -147,6 +150,7 @@ export default function Home({
             </button>
           </div>
         </label>
+        )}
       </section>
       {message && (
         <p className="note" data-testid="message">

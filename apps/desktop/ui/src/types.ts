@@ -48,6 +48,8 @@ export interface AppView {
   loginBusy: boolean;
   loginMessage: string | null;
   devLogin: boolean;
+  /** 서버 주소 칸을 보인다 (디버그 빌드이거나 제목을 7번 눌렀을 때, F43). 아니면 주소가 빈 문자열로 온다 */
+  showServerSettings: boolean;
   linkRequest: LinkRequestView | null;
 }
 

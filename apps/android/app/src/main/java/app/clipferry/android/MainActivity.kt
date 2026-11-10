@@ -10,6 +10,8 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -102,7 +104,25 @@ private fun MainScreen() {
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
-        Text("clip-ferry", style = MaterialTheme.typography.headlineMedium)
+        // 서버 주소 칸은 기본으로 숨긴다(F43). 제목을 3초 안에 7번 누르면 보인다.
+        val taps = remember { mutableListOf<Long>() }
+        Text(
+            "clip-ferry",
+            style = MaterialTheme.typography.headlineMedium,
+            modifier = Modifier.clickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null,
+            ) {
+                if (state.showServerSettings) return@clickable
+                val now = System.currentTimeMillis()
+                taps.removeAll { now - it > 3000 }
+                taps.add(now)
+                if (taps.size >= 7) {
+                    taps.clear()
+                    CoreController.showServerSettings()
+                }
+            },
+        )
 
         val pairing = state.pairing
         val mode = joinMode
@@ -111,7 +131,12 @@ private fun MainScreen() {
             !state.signedIn -> LoginScreen(state)
             pairing != null -> PairingScreen(pairing)
             !state.hasGroup && mode != null ->
-                JoinScreen(name, state.relayUrl, mode, onBack = { joinMode = null })
+                JoinScreen(
+                    name,
+                    state.relayUrl.takeIf { state.showServerSettings },
+                    mode,
+                    onBack = { joinMode = null },
+                )
             !state.hasGroup -> {
                 SetupScreen(
                     state,
@@ -121,12 +146,14 @@ private fun MainScreen() {
                     onEnterCode = { joinMode = JoinMode.CODE },
                 )
                 state.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-                RelayCard(
-                    state.relayUrl,
-                    buttonLabel = "저장",
-                    note = "코드로 참여하거나 새 그룹을 만들 때 쓰는 주소입니다. " +
-                        "QR로 참여하면 QR에 들어 있는 주소로 바뀝니다.",
-                ) {}
+                if (state.showServerSettings) {
+                    RelayCard(
+                        state.relayUrl,
+                        buttonLabel = "저장",
+                        note = "코드로 참여하거나 새 그룹을 만들 때 쓰는 주소입니다. " +
+                            "QR로 참여하면 QR에 들어 있는 주소로 바뀝니다. 비우고 저장하면 계정 서버가 알려 주는 주소로 돌아갑니다.",
+                    ) {}
+                }
                 AccountCard(state)
             }
             else -> ReadyScreen(state, batteryExempt)
@@ -179,14 +206,16 @@ private fun ReadyScreen(state: UiState, batteryExempt: Boolean) {
         }
     }
 
-    RelayCard(
-        state.relayUrl,
-        buttonLabel = "저장하고 다시 연결",
-        note = "그룹의 모든 기기가 같은 릴레이를 써야 합니다.",
-    ) {
-        // 주소가 같아도 다시 연결한다. 중지된 상태였으면 켠다.
-        CoreController.setServiceEnabled(true)
-        ClipFerryService.start(context)
+    if (state.showServerSettings) {
+        RelayCard(
+            state.relayUrl,
+            buttonLabel = "저장하고 다시 연결",
+            note = "그룹의 모든 기기가 같은 릴레이를 써야 합니다. 비우고 저장하면 계정 서버가 알려 주는 주소로 돌아갑니다.",
+        ) {
+            // 주소가 같아도 다시 연결한다. 중지된 상태였으면 켠다.
+            CoreController.setServiceEnabled(true)
+            ClipFerryService.start(context)
+        }
     }
 
     BatteryCard(batteryExempt) {
@@ -226,10 +255,12 @@ private fun LoginScreen(state: UiState) {
                 ) { Text("Google로 로그인") }
             }
             state.loginMessage?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-            TextButton(onClick = { showServer = !showServer }) { Text("서버 설정") }
+            if (state.showServerSettings) {
+                TextButton(onClick = { showServer = !showServer }) { Text("서버 설정") }
+            }
         }
     }
-    if (showServer) AccountServerCard(state.accountUrl)
+    if (showServer && state.showServerSettings) AccountServerCard(state.accountUrl)
     if (BuildConfig.DEBUG) DevLoginCard(state.loginBusy)
 }
 
@@ -296,7 +327,9 @@ private fun AccountCard(state: UiState) {
         Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text("계정", style = MaterialTheme.typography.titleMedium)
             Text(if (account.name.isBlank()) account.email else "${account.name} · ${account.email}")
-            Text("계정 서버: ${account.accountUrl}", style = MaterialTheme.typography.bodySmall)
+            if (state.showServerSettings) {
+                Text("계정 서버: ${account.accountUrl}", style = MaterialTheme.typography.bodySmall)
+            }
             OutlinedButton(onClick = { confirm = true }) { Text("로그아웃") }
         }
     }
