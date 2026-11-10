@@ -59,6 +59,9 @@ struct Args {
     /// 운영자 페이지 `/admin`에 들어올 수 있는 구글 계정 이메일 (쉼표로 여러 개, F38). 없으면 열지 않는다
     #[arg(long, env = "CF_ACCOUNT_ADMIN_EMAILS", value_delimiter = ',')]
     admin_emails: Vec<String>,
+    /// 앱에 알려 줄 릴레이 주소 (예: wss://relay.example.com, F43). 앱은 계정 서버 주소만 갖고 이 값을 받아 쓴다
+    #[arg(long, env = "CF_ACCOUNT_RELAY_URL")]
+    relay_url: Option<String>,
 }
 
 #[derive(Subcommand, Debug)]
@@ -149,6 +152,20 @@ async fn main() -> anyhow::Result<()> {
         );
     }
 
+    let relay_url = match args
+        .relay_url
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        Some(u) if u.starts_with("ws://") || u.starts_with("wss://") => Some(u.to_string()),
+        Some(_) => anyhow::bail!("CF_ACCOUNT_RELAY_URL은 ws:// 또는 wss://로 시작해야 합니다"),
+        None => {
+            tracing::warn!("no relay url configured; apps keep their saved relay address");
+            None
+        }
+    };
+
     let state = Arc::new(AppState {
         store,
         signer,
@@ -162,6 +179,7 @@ async fn main() -> anyhow::Result<()> {
         dev_pages: args.dev_pages,
         usage_secret: args.usage_secret.clone().filter(|s| !s.is_empty()),
         admin_emails,
+        relay_url,
     });
 
     // 만료된 갱신 토큰·보관 기간이 지난 사용량 정리 (한 시간마다)

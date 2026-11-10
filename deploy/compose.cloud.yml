@@ -55,6 +55,8 @@ services:
       CF_ACCOUNT_GOOGLE_DESKTOP_CLIENT_SECRET: "${CF_GOOGLE_DESKTOP_CLIENT_SECRET:-}"
       CF_ACCOUNT_USAGE_SECRET: "${CF_USAGE_SECRET}"
       CF_ACCOUNT_ADMIN_EMAILS: "${CF_ADMIN_EMAILS:-}"
+      # 앱이 받아 쓸 릴레이 주소 (F43). 앱은 계정 서버 주소만 내장한다
+      CF_ACCOUNT_RELAY_URL: "wss://${CF_DOMAIN}"
       # 공개 서버에서는 개발용 기능을 켜지 않는다
       CF_ACCOUNT_DEV_PAGES: "false"
       CF_ACCOUNT_DEV_LOGIN: "false"

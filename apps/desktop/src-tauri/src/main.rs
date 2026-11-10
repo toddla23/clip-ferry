@@ -126,6 +126,11 @@ async fn logout(shell: State<'_, Arc<Shell>>) -> Result<AppView, String> {
 }
 
 #[tauri::command]
+fn show_server_settings(shell: State<'_, Arc<Shell>>) -> Result<AppView, String> {
+    shell.show_server_settings()
+}
+
+#[tauri::command]
 fn set_account_url(shell: State<'_, Arc<Shell>>, url: String) -> Result<AppView, String> {
     shell.set_account_url(&url)
 }
@@ -163,7 +168,8 @@ fn main() {
             cancel_login,
             dev_login,
             logout,
-            set_account_url
+            set_account_url,
+            show_server_settings
         ])
         .on_window_event(|window, event| {
             // 창을 닫아도 트레이에 남는다. 종료는 트레이 메뉴에서.

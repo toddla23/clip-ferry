@@ -6,15 +6,25 @@ import android.content.Context
 class Settings(context: Context) {
     private val prefs = context.getSharedPreferences("settings", Context.MODE_PRIVATE)
 
-    /** 개발용 기본값: 에뮬레이터에서 본 PC의 로컬 릴레이. 실제 릴레이 주소는 화면에서 바꾼다(정식 주소는 O-03 이후). */
+    /** 릴레이 주소. 사용자가 직접 넣지 않았으면([relayCustom]) 계정 서버가 알려 주는 주소로 바뀐다 (F43). */
     var relayUrl: String
         get() = prefs.getString(KEY_RELAY, DEFAULT_RELAY) ?: DEFAULT_RELAY
         set(value) = prefs.edit().putString(KEY_RELAY, value).apply()
 
-    /** 계정 서버 주소 (F35). 로그아웃 상태에서만 바꾼다. 기본값은 에뮬레이터에서 본 PC의 로컬 계정 서버. */
+    /** 계정 서버 주소 (F35). 로그아웃 상태에서만 바꾼다. 기본값은 빌드 종류마다 다르다 (F43). */
     var accountUrl: String
         get() = prefs.getString(KEY_ACCOUNT, DEFAULT_ACCOUNT) ?: DEFAULT_ACCOUNT
         set(value) = prefs.edit().putString(KEY_ACCOUNT, value).apply()
+
+    /** 사용자가 릴레이 주소를 직접 넣었다 (F43). 아니면 계정 서버가 알려 주는 주소를 따른다. */
+    var relayCustom: Boolean
+        get() = prefs.getBoolean(KEY_RELAY_CUSTOM, false)
+        set(value) = prefs.edit().putBoolean(KEY_RELAY_CUSTOM, value).apply()
+
+    /** 배포 빌드에서도 서버 주소 칸을 보인다 (제목을 7번 눌러 켠다, F43). */
+    var showServer: Boolean
+        get() = prefs.getBoolean(KEY_SHOW_SERVER, false)
+        set(value) = prefs.edit().putBoolean(KEY_SHOW_SERVER, value).apply()
 
     var serviceEnabled: Boolean
         get() = prefs.getBoolean(KEY_SERVICE, true)
@@ -38,8 +48,10 @@ class Settings(context: Context) {
         const val KEY_RELAY = "relay_url"
         const val KEY_SERVICE = "service_enabled"
         const val KEY_NOTIFY_RECEIVE = "notify_on_receive"
-        const val DEFAULT_RELAY = "ws://10.0.2.2:8787"
+        const val DEFAULT_RELAY = BuildConfig.DEFAULT_RELAY_URL
         const val KEY_ACCOUNT = "account_url"
-        const val DEFAULT_ACCOUNT = "http://10.0.2.2:8788"
+        const val DEFAULT_ACCOUNT = BuildConfig.DEFAULT_ACCOUNT_URL
+        const val KEY_RELAY_CUSTOM = "relay_custom"
+        const val KEY_SHOW_SERVER = "show_server"
     }
 }

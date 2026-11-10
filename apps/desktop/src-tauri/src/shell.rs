@@ -44,6 +44,10 @@ struct Pairing {
 struct Inner {
     relay_url: String,
     account_url: String,
+    /// 사용자가 릴레이 주소를 직접 넣었다. 아니면 계정 서버가 알려 주는 주소를 따른다 (F43)
+    relay_custom: bool,
+    /// 배포 빌드에서도 서버 주소 칸을 보인다 (F43)
+    show_server: bool,
     /// 릴레이가 접속 토큰을 거절했다 (다시 연결되면 지운다)
     auth_rejected: bool,
     /// 브라우저 로그인을 기다리는 중
@@ -199,6 +203,8 @@ impl Shell {
             sync_sensitive,
             send_enabled,
             receive_enabled,
+            relay_custom,
+            show_server,
         } = settings::load(&data_dir);
         let autostart = handle.autolaunch().is_enabled().unwrap_or(false);
         Ok(Arc::new(Self {
@@ -212,6 +218,8 @@ impl Shell {
             inner: Mutex::new(Inner {
                 relay_url,
                 account_url,
+                relay_custom,
+                show_server,
                 auth_rejected: false,
                 login_task: None,
                 login_message: None,
@@ -235,6 +243,7 @@ impl Shell {
     /// 없으면 첫 실행 마법사를 띄운다. tokio 런타임 안에서 불러야 한다.
     pub fn begin(self: &Arc<Self>) {
         self.watch_clipboard();
+        self.refresh_server_config();
         if !self.account.is_signed_in() {
             self.publish();
             return;
@@ -417,7 +426,10 @@ impl Shell {
             sync_sensitive: self.sync_sensitive,
             send_enabled: inner.send_enabled,
             receive_enabled: inner.receive_enabled,
+            relay_custom: inner.relay_custom,
+            show_server: inner.show_server,
         };
+        drop(inner);
         f(&mut s);
         settings::save(&self.data_dir, &s).map_err(|_| "설정을 저장하지 못했습니다".to_string())
     }
@@ -463,10 +475,25 @@ impl Shell {
         Ok(self.view())
     }
 
+    /// 릴레이 주소를 직접 정한다. 비우면 계정 서버가 알려 주는 주소로 돌아간다 (F43).
     pub fn set_relay_url(self: &Arc<Self>, input: &str) -> Result<AppView, String> {
+        if input.trim().is_empty() {
+            self.save_settings(|s| s.relay_custom = false)?;
+            self.inner.lock().unwrap().relay_custom = false;
+            self.refresh_server_config();
+            self.publish();
+            return Ok(self.view());
+        }
         let relay_url = settings::validate_relay_url(input)?;
-        self.save_settings(|s| s.relay_url = relay_url.clone())?;
-        self.inner.lock().unwrap().relay_url = relay_url;
+        self.save_settings(|s| {
+            s.relay_url = relay_url.clone();
+            s.relay_custom = true;
+        })?;
+        {
+            let mut inner = self.inner.lock().unwrap();
+            inner.relay_url = relay_url;
+            inner.relay_custom = true;
+        }
         // 그룹이 아직 없으면 연결할 것이 없다.
         if self.app.connection().is_some() {
             self.start();
@@ -476,16 +503,73 @@ impl Shell {
         Ok(self.view())
     }
 
+    /// 계정 서버가 알려 주는 릴레이 주소를 받아, 사용자가 직접 정하지 않았으면 그 주소로 바꾼다 (F43).
+    /// 못 받으면 저장해 둔 주소를 그대로 쓴다. tokio 런타임 안에서 불러야 한다.
+    fn refresh_server_config(self: &Arc<Self>) {
+        let (account_url, custom) = {
+            let inner = self.inner.lock().unwrap();
+            (inner.account_url.clone(), inner.relay_custom)
+        };
+        if custom {
+            return;
+        }
+        let weak = Arc::downgrade(self);
+        let http = self.account.http().clone();
+        tauri::async_runtime::spawn(async move {
+            let Some(relay) = account::server_relay_url(&http, &account_url).await else {
+                return;
+            };
+            let Ok(relay) = settings::validate_relay_url(&relay) else {
+                return;
+            };
+            if let Some(shell) = weak.upgrade() {
+                shell.apply_server_relay(&account_url, relay);
+            }
+        });
+    }
+
+    fn apply_server_relay(self: &Arc<Self>, account_url: &str, relay: String) {
+        {
+            let inner = self.inner.lock().unwrap();
+            // 그사이 사용자가 직접 정했거나 다른 계정 서버로 바꿨으면 따르지 않는다.
+            if inner.relay_custom || inner.account_url != account_url || inner.relay_url == relay {
+                return;
+            }
+        }
+        if self.save_settings(|s| s.relay_url = relay.clone()).is_err() {
+            return;
+        }
+        let running = {
+            let mut inner = self.inner.lock().unwrap();
+            inner.relay_url = relay;
+            inner.session.is_some()
+        };
+        if running {
+            self.start();
+        } else {
+            self.publish();
+        }
+    }
+
+    /// 배포 빌드에서도 서버 주소 칸을 보이게 한다 (제목을 7번 누르면, F43).
+    pub fn show_server_settings(&self) -> Result<AppView, String> {
+        self.save_settings(|s| s.show_server = true)?;
+        self.inner.lock().unwrap().show_server = true;
+        self.publish();
+        Ok(self.view())
+    }
+
     // ------------------------------------------------------------ 계정 (F34)
 
     /// 로그인 전에만 바꿀 수 있다(로그인 정보는 그 계정 서버의 것이다).
-    pub fn set_account_url(&self, input: &str) -> Result<AppView, String> {
+    pub fn set_account_url(self: &Arc<Self>, input: &str) -> Result<AppView, String> {
         if self.account.is_signed_in() {
             return Err("로그아웃한 뒤에 바꿀 수 있습니다".into());
         }
         let url = settings::validate_account_url(input)?;
         self.save_settings(|s| s.account_url = url.clone())?;
         self.inner.lock().unwrap().account_url = url;
+        self.refresh_server_config();
         self.publish();
         Ok(self.view())
     }
@@ -544,6 +628,7 @@ impl Shell {
         }
         if result.is_ok() {
             self.register_device();
+            self.refresh_server_config();
             // 그룹이 있으면(기존 사용자) 바로 연결하고, 없으면 마법사로 간다.
             if self.app.connection().is_some() {
                 self.start();
@@ -1058,6 +1143,7 @@ impl Shell {
                     inner.account_url.clone(),
                     inner.login_task.is_some(),
                     inner.login_message.clone(),
+                    cfg!(debug_assertions) || inner.show_server,
                 ),
                 inner
                     .link_request
@@ -1086,7 +1172,17 @@ impl Shell {
             email: p.email,
             name: p.name,
         });
-        (view.account_url, view.login_busy, view.login_message) = login;
+        (
+            view.account_url,
+            view.login_busy,
+            view.login_message,
+            view.show_server_settings,
+        ) = login;
+        if !view.show_server_settings {
+            // 서버 주소는 화면에 보내지 않는다 (F43)
+            view.account_url.clear();
+            view.relay_url.clear();
+        }
         view.dev_login = cfg!(debug_assertions);
         if view.account.is_none() {
             // 로그인 전에는 연결하지 않는다.

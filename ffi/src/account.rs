@@ -308,7 +308,7 @@ impl Account {
             .map_err(|_| "먼저 로그인하세요".to_string())?;
         let token = self.token().await.map_err(|e| match e {
             TokenError::SignedOut => "로그인이 만료되었습니다. 다시 로그인하세요".to_string(),
-            TokenError::Unavailable => format!("계정 서버({url})에 연결하지 못했습니다"),
+            TokenError::Unavailable => "서버에 연결하지 못했습니다".to_string(),
         })?;
         let resp = self
             .http
@@ -321,7 +321,7 @@ impl Account {
             }))
             .send()
             .await
-            .map_err(|_| format!("계정 서버({url})에 연결하지 못했습니다"))?;
+            .map_err(|_| "서버에 연결하지 못했습니다".to_string())?;
         match resp.status().as_u16() {
             200 => {}
             404 => return Err("계정 서버가 계정 연결을 받지 않습니다 (예전 버전)".into()),
@@ -379,6 +379,26 @@ impl Account {
         }
     }
 
+    /// 계정 서버가 알려 주는 릴레이 주소 (F43, `GET /v1/config`). 못 받거나 없으면 `None`.
+    pub async fn server_relay_url(&self, account_url: &str) -> Option<String> {
+        #[derive(Deserialize)]
+        struct AppConfig {
+            relay_url: Option<String>,
+        }
+        let account_url = check_url(account_url).ok()?;
+        let resp = self
+            .http
+            .get(format!("{account_url}/v1/config"))
+            .send()
+            .await
+            .ok()?;
+        if !resp.status().is_success() {
+            return None;
+        }
+        let relay = resp.json::<AppConfig>().await.ok()?.relay_url?;
+        (relay.starts_with("ws://") || relay.starts_with("wss://")).then_some(relay)
+    }
+
     /// Android 앱이 구글 로그인 창에 넘길 웹 클라이언트 ID (`GET /v1/auth/google/android`).
     pub async fn google_client_id(&self, account_url: &str) -> Result<String, String> {
         let account_url = check_url(account_url)?;
@@ -387,7 +407,7 @@ impl Account {
             .get(format!("{account_url}/v1/auth/google/android"))
             .send()
             .await
-            .map_err(|_| format!("계정 서버({account_url})에 연결하지 못했습니다"))?;
+            .map_err(|_| "서버에 연결하지 못했습니다".to_string())?;
         match resp.status().as_u16() {
             200 => {}
             404 => return Err("계정 서버가 Android 구글 로그인을 받지 않습니다 (웹 클라이언트 ID가 설정되지 않음)".into()),
@@ -412,7 +432,7 @@ impl Account {
             .json(&serde_json::json!({ "id_token": id_token }))
             .send()
             .await
-            .map_err(|_| format!("계정 서버({account_url})에 연결하지 못했습니다"))?;
+            .map_err(|_| "서버에 연결하지 못했습니다".to_string())?;
         self.finish(&account_url, resp).await
     }
 
@@ -425,7 +445,7 @@ impl Account {
             .json(&serde_json::json!({ "email": email.trim(), "name": "" }))
             .send()
             .await
-            .map_err(|_| format!("계정 서버({account_url})에 연결하지 못했습니다"))?;
+            .map_err(|_| "서버에 연결하지 못했습니다".to_string())?;
         if resp.status().as_u16() == 404 {
             return Err("계정 서버가 개발용 로그인을 받지 않습니다 (--dev-login)".into());
         }

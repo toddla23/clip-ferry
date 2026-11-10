@@ -67,6 +67,7 @@ async fn start(store: Store, dev_login: bool) -> Server {
         dev_pages: true,
         usage_secret: Some(USAGE_SECRET.into()),
         admin_emails: vec![],
+        relay_url: None,
     })
     .await
 }
@@ -689,6 +690,7 @@ async fn start_desktop(token_url: &str) -> Server {
         dev_pages: false,
         usage_secret: None,
         admin_emails: vec![],
+        relay_url: None,
     });
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -843,6 +845,7 @@ async fn android_client_id_config() {
         dev_pages: false,
         usage_secret: None,
         admin_emails: vec![],
+        relay_url: None,
     })
     .await;
     let (st, v) = srv.get_auth("/v1/auth/google/android", None).await;
@@ -851,6 +854,34 @@ async fn android_client_id_config() {
     let (st, v) = srv.google_login(good_token(&new_sub())).await;
     assert_eq!(st, 200, "{v}");
     assert!(!s(&v, "refresh_token").is_empty());
+}
+
+/// 앱이 받아 쓸 릴레이 주소 (F43). 로그인 없이 읽고, 없으면 `null`.
+#[tokio::test]
+async fn app_config_tells_relay_url() {
+    let srv = start(Store::memory(), false).await;
+    let (st, v) = srv.get_auth("/v1/config", None).await;
+    assert_eq!(st, 200);
+    assert!(v["relay_url"].is_null(), "{v}");
+
+    let srv = serve(AppState {
+        store: Store::memory(),
+        signer: Signer::from_seed(&[42u8; 32]),
+        google: GoogleVerifier::new(vec![CLIENT.into()], static_google_keys()),
+        google_desktop: None,
+        google_android: None,
+        dev_login: false,
+        dev_pages: false,
+        usage_secret: None,
+        admin_emails: vec![],
+        relay_url: Some("wss://relay.example.com".into()),
+    })
+    .await;
+    let (st, v) = srv.get_auth("/v1/config", None).await;
+    assert_eq!(
+        (st, s(&v, "relay_url")),
+        (200, "wss://relay.example.com".to_string())
+    );
 }
 
 /// 계정 연결(F37): 로그인한 기기의 공개키에 서명한 참여 확인서. 같은 계정 기기가 `/v1/keys`로 확인한다.
@@ -937,6 +968,7 @@ async fn start_admin(store: Store, admins: &[&str]) -> Server {
         dev_pages: false,
         usage_secret: Some(USAGE_SECRET.into()),
         admin_emails: clip_ferry_account::admin::normalize_emails(admins),
+        relay_url: None,
     })
     .await
 }

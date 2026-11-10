@@ -6,6 +6,7 @@ import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import java.io.File
+import kotlin.concurrent.thread
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -86,6 +87,8 @@ data class UiState(
     val authRejected: Boolean = false,
     /** 같은 계정의 새 기기가 보낸 참여 요청(기기 이름, F37). 연결·무시를 고르면 사라진다. */
     val linkRequest: String? = null,
+    /** 서버 주소 칸을 보인다 (디버그 빌드이거나 제목을 7번 눌렀을 때, F43). */
+    val showServerSettings: Boolean = false,
 ) {
     /** 그룹이 있다(제거된 그룹 포함). 없으면 첫 실행 화면을 보여 준다. */
     val hasGroup: Boolean get() = status?.epoch != null
@@ -128,11 +131,13 @@ object CoreController : CoreEvents {
             notifyOnReceive = settings.notifyOnReceive,
             syncSensitive = settings.syncSensitive,
             accountUrl = settings.accountUrl,
+            showServerSettings = BuildConfig.DEBUG || settings.showServer,
         )
         try {
             val c = ensureOpen()
             mutableState.update { it.copy(account = c.account()) }
             refresh()
+            refreshServerConfig()
         } catch (e: FfiException) {
             fail(e.userMessage())
         } catch (e: UnsatisfiedLinkError) {
@@ -209,15 +214,56 @@ object CoreController : CoreEvents {
         }
     }
 
-    /** 릴레이 주소를 저장한다. 잘못되었으면 이유를, 괜찮으면 `null`을 돌려준다. */
+    /**
+     * 릴레이 주소를 직접 정한다. 비우면 계정 서버가 알려 주는 주소로 돌아간다 (F43).
+     * 잘못되었으면 이유를, 괜찮으면 `null`을 돌려준다.
+     */
     fun setRelayUrl(url: String): String? {
         val trimmed = url.trim()
+        if (trimmed.isEmpty()) {
+            settings.relayCustom = false
+            refreshServerConfig()
+            return null
+        }
         if (!(trimmed.startsWith("ws://") || trimmed.startsWith("wss://"))) {
             return "릴레이 주소는 ws:// 또는 wss://로 시작해야 합니다"
         }
         settings.relayUrl = trimmed
+        settings.relayCustom = true
         mutableState.update { it.copy(relayUrl = trimmed) }
         return null
+    }
+
+    /**
+     * 계정 서버가 알려 주는 릴레이 주소를 받아, 사용자가 직접 정하지 않았으면 그 주소로 바꾼다 (F43).
+     * 못 받으면 저장해 둔 주소를 그대로 쓴다. 네트워크를 쓰므로 따로 스레드에서 한다.
+     */
+    fun refreshServerConfig() {
+        if (settings.relayCustom) return
+        val c = client ?: return
+        val accountUrl = settings.accountUrl
+        thread(name = "server-config", isDaemon = true) {
+            val relay = try {
+                c.serverRelayUrl(accountUrl)
+            } catch (e: Exception) {
+                null
+            } ?: return@thread
+            synchronized(this) {
+                // 그사이 사용자가 직접 정했거나 다른 계정 서버로 바꿨으면 따르지 않는다.
+                if (settings.relayCustom || settings.accountUrl != accountUrl || settings.relayUrl == relay) {
+                    return@thread
+                }
+                settings.relayUrl = relay
+                mutableState.update { it.copy(relayUrl = relay) }
+                if (c.isRunning()) start()
+            }
+        }
+    }
+
+    /** 배포 빌드에서도 서버 주소 칸을 보이게 한다 (제목을 7번 누르면, F43). */
+    fun showServerSettings() {
+        settings.showServer = true
+        mutableState.update { it.copy(showServerSettings = true) }
     }
 
     fun setServiceEnabled(enabled: Boolean) {
@@ -295,6 +341,7 @@ object CoreController : CoreEvents {
         }
         settings.accountUrl = trimmed
         mutableState.update { it.copy(accountUrl = trimmed) }
+        refreshServerConfig()
         return null
     }
 
@@ -337,6 +384,7 @@ object CoreController : CoreEvents {
                 it.copy(account = info, loginBusy = false, loginMessage = null, authRejected = false)
             }
             refresh()
+            refreshServerConfig()
             // 기존 사용자(그룹이 있음)는 바로 이어서 연결한다. 없으면 첫 실행 화면으로 간다.
             if (mutableState.value.hasGroup && mutableState.value.serviceEnabled) startService()
         }.onFailure { e ->

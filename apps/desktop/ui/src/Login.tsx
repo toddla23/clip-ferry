@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type { AppView } from "./types";
+import { useServerReveal } from "./useServerReveal";
 
 // 로그인 전 화면 (F34). 로그인해야 릴레이에 연결한다. 그룹·페어링은 로그아웃해도 그대로 남는다.
 export default function Login({ view, onView }: { view: AppView; onView: (v: AppView) => void }) {
@@ -8,6 +9,7 @@ export default function Login({ view, onView }: { view: AppView; onView: (v: App
   const [showServer, setShowServer] = useState(false);
   const [email, setEmail] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const reveal = useServerReveal(view, onView);
 
   async function call(cmd: string, args?: Record<string, unknown>) {
     setError(null);
@@ -22,7 +24,7 @@ export default function Login({ view, onView }: { view: AppView; onView: (v: App
 
   return (
     <main>
-      <h1>clip-ferry 로그인</h1>
+      <h1 onClick={reveal}>clip-ferry 로그인</h1>
       <p className="note">
         {hasGroup
           ? "다시 로그인하면 이 기기의 그룹과 페어링은 그대로 이어서 씁니다."
@@ -50,6 +52,7 @@ export default function Login({ view, onView }: { view: AppView; onView: (v: App
         </p>
       )}
 
+      {view.showServerSettings && (
       <section>
         <button className="link" onClick={() => setShowServer(!showServer)}>
           {showServer ? "서버 설정 닫기" : "서버 설정"}
@@ -62,7 +65,7 @@ export default function Login({ view, onView }: { view: AppView; onView: (v: App
                 data-testid="account-url"
                 value={server}
                 onChange={(e) => setServer(e.target.value)}
-                placeholder="https://<Pi 이름>.ts.net:8443"
+                placeholder="https://<서버>:8443"
                 spellCheck={false}
                 disabled={view.loginBusy}
               />
@@ -76,6 +79,7 @@ export default function Login({ view, onView }: { view: AppView; onView: (v: App
           </label>
         )}
       </section>
+      )}
 
       {view.devLogin && !view.loginBusy && (
         <section>

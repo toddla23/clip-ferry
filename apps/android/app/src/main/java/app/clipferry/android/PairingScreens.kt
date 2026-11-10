@@ -125,7 +125,8 @@ enum class JoinMode { SCAN, CODE }
 @Composable
 fun JoinScreen(
     name: String,
-    relayUrl: String,
+    /** 서버 주소를 숨길 때(F43)는 `null` */
+    relayUrl: String?,
     initialMode: JoinMode,
     onBack: () -> Unit,
 ) {
@@ -205,10 +206,9 @@ fun JoinScreen(
             enabled = code.isNotBlank(),
             modifier = Modifier.fillMaxWidth(),
         ) { Text("참여") }
-        Text(
-            "코드로 참여하면 이 릴레이를 씁니다: $relayUrl",
-            style = MaterialTheme.typography.bodySmall,
-        )
+        relayUrl?.let {
+            Text("코드로 참여하면 이 릴레이를 씁니다: $it", style = MaterialTheme.typography.bodySmall)
+        }
         OutlinedButton(
             onClick = {
                 notice = null

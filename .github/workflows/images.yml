@@ -5,7 +5,8 @@ name: Images
 
 on:
   push:
-    branches: [main, "f40-*"]
+    # 기능 브랜치(f40-…, f43-…)도 올려 머지 전에 서버에서 시험한다
+    branches: [main, "f[0-9]*"]
     tags: ["v*"]
     paths:
       - "core/**"
