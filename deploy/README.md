@@ -211,6 +211,23 @@ docker compose -f deploy/compose.yml logs --tail 5 relay    # access tokens requ
 
 끄려면 덧붙임 없이 `docker compose -f deploy/compose.yml up -d`.
 
+## 공개 서버 (Azure VM + Caddy, F40 · D-025)
+
+공개 서버 한 대에 릴레이·계정 서버·MariaDB를 `compose.cloud.yml`로 올린다. Pi와 다른 점:
+
+- 앞단 TLS는 `tailscale serve` 대신 **Caddy**(`deploy/Caddyfile`, Let's Encrypt 자동). 릴레이 `wss://<이름>`(443), 계정 서버 `https://<이름>:8443`. 계정 서버의 `/internal/*`은 밖에 열지 않는다. 접속 기록은 남기지 않는다.
+- 이미지는 서버에서 빌드하지 않고 GitHub Actions(`.github/workflows/images.yml`)가 GHCR에 올린 것을 받는다(`ghcr.io/toddla23/clip-ferry-relay`·`-account`, 태그는 `CF_IMAGE_TAG`).
+- 설정은 `deploy/.env.cloud`(예시 `deploy/env.cloud.example`, git에 넣지 않는다). 개발용 로그인·시험 페이지는 켜지 않는다.
+- 백업: 서버의 `deploy/backup.sh`가 매일 덤프(14일), Pi가 `deploy/pull-backup.sh`로 가져간다(백업 전용 키는 `backup-send.sh`만 실행).
+
+```bash
+C="docker compose --env-file deploy/.env.cloud -f deploy/compose.cloud.yml"
+$C pull && $C up -d      # 배포·업데이트
+$C logs -f account relay caddy
+```
+
+처음 세우는 절차(VM 만들기·포트·Pi 데이터 이전·백업·복원 시험)는 `todo/F40-확인.md`.
+
 ## 클라우드로 옮길 때
 
 - 호스팅(Fly.io 등)이 TLS를 종단하면 이 `Dockerfile`을 그대로 쓴다. 호스팅의 프록시가 어떤 헤더로 클라이언트 IP를 주는지 확인하고 `CF_TRUST_PROXY`를 정한다(현재는 `X-Forwarded-For`만 지원).
