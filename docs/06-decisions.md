@@ -138,8 +138,8 @@
 
 ### D-025. 공개 서버 1단계는 Azure for Students VM 한 대에 올린다 (2026-11-10 사용자 결정, O-04)
 - 사용자가 Azure for Students 크레딧 $100을 갖고 있다. 학생 무료 VM(월 750시간) 한 대에 릴레이·계정 서버·MariaDB를 지금 Pi와 같은 docker compose로 올리고, 앞단 TLS는 `tailscale serve` 대신 Caddy(Let's Encrypt 자동)가 맡는다. 비교 근거는 `docs/08-hosting.md`.
-- 리전은 **East Asia**(홍콩). 학생 구독은 Korea Central(`NotAvailableForSubscription`)·Japan East에서 무료 크기를 만들 수 없었다(2026-11-10). 한국에서 왕복 수십 ms라 동기화에 지장 없다. 개인정보처리방침의 서버 위치는 홍콩. CPU 종류는 상관없다. 이미지를 소스에서 빌드하고 기반 이미지가 x86·ARM을 모두 지원한다.
-- 1단계는 도메인 없이 Azure가 주는 무료 이름(`<이름>.eastasia.cloudapp.azure.com`)으로 `wss://`·`https://`를 연다. 도메인(O-03)은 2단계에서 정한다.
+- 리전은 **Japan East**(도쿄, 한국에서 왕복 약 30ms). 학생 구독은 정책으로 배포 지역이 5곳(`japaneast`·`malaysiawest`·`indonesiacentral`·`centralindia`·`indiasouthcentral`)뿐이고, 그 어디서도 학생 무료 VM 크기를 만들 수 없었다(2026-11-10). 그래서 **VM은 크레딧으로 내는 가장 작은 크기**로 만든다(월 $10~15 예상 → 크레딧으로 약 6~9개월). 개인정보처리방침의 서버 위치는 일본. CPU 종류는 상관없다. 이미지를 소스에서 빌드하고 기반 이미지가 x86·ARM을 모두 지원한다.
+- 1단계는 도메인 없이 Azure가 주는 무료 이름(`<이름>.japaneast.cloudapp.azure.com`)으로 `wss://`·`https://`를 연다. 도메인(O-03)은 2단계에서 정한다.
 - 한계·위험:
   - 크레딧이나 학생 자격이 끝나면 VM이 멈춘다. 종량제로 바꾸거나 옮겨야 하므로 DB 백업·복원 절차를 처음부터 둔다.
   - 학생 구독은 학습용 혜택이다. 유료화(O-05)나 다수 사용자 운영 전에는 일반 구독이나 다른 호스팅으로 옮길지 다시 본다.

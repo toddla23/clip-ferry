@@ -551,9 +551,9 @@ CLI 명령 예시는 `cf` = `cargo run -q -p clip-ferry-cli --` 의 줄임이다
 ### F40 1단계: Azure 서버로 이전 (D-025) — 범위 초안, 사용자 합의 전
 
 - **범위**
-  - Azure for Students VM 한 대(East Asia·홍콩 — 학생 구독은 Korea Central·Japan East에서 무료 크기 불가, Ubuntu LTS, 학생 무료 크기). 메모리 1GB라 스왑 2GB
+  - Azure for Students VM 한 대(Japan East, Ubuntu LTS, 크레딧으로 내는 가장 작은 크기 — 허용 지역 어디서도 학생 무료 크기 불가). 메모리 1GB라 스왑 2GB
   - 네트워크 보안 그룹은 80·443·8443만 연다. SSH(22)는 인터넷에 열지 않고 VM을 tailnet에 넣어 Tailscale로만 접속한다. MariaDB 포트는 어디에도 열지 않는다
-  - Azure 무료 DNS 이름 `<이름>.eastasia.cloudapp.azure.com`(고정 공인 IP)
+  - Azure 무료 DNS 이름 `<이름>.japaneast.cloudapp.azure.com`(고정 공인 IP)
   - `deploy/compose.cloud.yml`(새 파일): Caddy가 TLS를 종단(Let's Encrypt 자동 갱신). 주소는 Pi와 같은 모양으로 둔다: 릴레이 `wss://<이름>`(443), 계정 서버 `https://<이름>:8443`. Caddy는 계정 서버의 `/internal/*`을 밖에 열지 않는다(릴레이는 Docker 네트워크로 직접 닿는다). 릴레이는 `CF_TRUST_PROXY=true`로 Caddy의 `X-Forwarded-For`를 쓰고 포트를 호스트에 열지 않는다. 접속 토큰 확인은 처음부터 켠다(F33)
   - 이미지: GitHub Actions가 릴레이·계정 서버 이미지를 빌드해 GHCR(`ghcr.io/toddla23/clip-ferry-relay`·`-account`)에 올린다(main 푸시·`v*` 태그, VM의 CPU에 맞춰 amd64, 필요하면 arm64도). VM은 받기만 한다(`docker compose pull`)
   - DB 이전: Pi MariaDB 덤프 → VM 복원, 접속 토큰 서명 키도 옮긴다(계정 ID가 유지되어 F37 계정 채널이 그대로다)
