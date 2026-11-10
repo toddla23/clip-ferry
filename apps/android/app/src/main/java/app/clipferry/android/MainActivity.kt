@@ -91,11 +91,8 @@ private fun MainScreen() {
     var batteryExempt by remember { mutableStateOf(isBatteryExempt(context)) }
     LifecycleEventEffect(Lifecycle.Event.ON_RESUME) { batteryExempt = isBatteryExempt(context) }
 
-    // 첫 실행 화면의 이름과, 참여 화면을 열었는지(어떤 방식으로).
+    // 첫 실행 화면의 이름
     var name by rememberSaveable { mutableStateOf(CoreController.defaultDeviceName) }
-    var joinMode by rememberSaveable { mutableStateOf<JoinMode?>(null) }
-    // 그룹에 들어가면 참여 화면은 닫는다.
-    LaunchedEffect(state.hasGroup) { if (state.hasGroup) joinMode = null }
 
     Column(
         modifier = Modifier
@@ -125,33 +122,21 @@ private fun MainScreen() {
         )
 
         val pairing = state.pairing
-        val mode = joinMode
+        val broken = state.brokenState
         when {
+            // 저장된 정보가 일부만 남아 코어를 열 수 없다 (F44)
+            broken != null -> BrokenStateScreen(broken)
             // 로그인 전에는 로그인 화면만 보이고 연결하지 않는다 (F35)
             !state.signedIn -> LoginScreen(state)
             pairing != null -> PairingScreen(pairing)
-            !state.hasGroup && mode != null ->
-                JoinScreen(
-                    name,
-                    state.relayUrl.takeIf { state.showServerSettings },
-                    mode,
-                    onBack = { joinMode = null },
-                )
             !state.hasGroup -> {
-                SetupScreen(
-                    state,
-                    name,
-                    onNameChange = { name = it },
-                    onScan = { joinMode = JoinMode.SCAN },
-                    onEnterCode = { joinMode = JoinMode.CODE },
-                )
+                SetupScreen(state, name, onNameChange = { name = it })
                 state.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
                 if (state.showServerSettings) {
                     RelayCard(
                         state.relayUrl,
                         buttonLabel = "저장",
-                        note = "코드로 참여하거나 새 그룹을 만들 때 쓰는 주소입니다. " +
-                            "QR로 참여하면 QR에 들어 있는 주소로 바뀝니다. 비우고 저장하면 계정 서버가 알려 주는 주소로 돌아갑니다.",
+                        note = "그룹에 들어갈 때 쓰는 주소입니다. 비우고 저장하면 계정 서버가 알려 주는 주소로 돌아갑니다.",
                     ) {}
                 }
                 AccountCard(state)
@@ -164,7 +149,6 @@ private fun MainScreen() {
 @Composable
 private fun ReadyScreen(state: UiState, batteryExempt: Boolean) {
     val context = LocalContext.current
-    var inviteError by remember { mutableStateOf<String?>(null) }
 
     StatusCard(state)
 
@@ -174,12 +158,7 @@ private fun ReadyScreen(state: UiState, batteryExempt: Boolean) {
 
     SendCard(state)
 
-    DevicesCard(
-        devices = state.devices,
-        canInvite = !state.removed,
-        onInvite = { inviteError = CoreController.startInvite() },
-    )
-    inviteError?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+    DevicesCard(devices = state.devices)
 
     GroupCard(state)
 

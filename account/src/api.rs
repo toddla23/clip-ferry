@@ -84,7 +84,8 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/v1/auth/logout", post(auth_logout))
         .route("/v1/me", get(me).delete(delete_me))
         .route("/v1/devices/:device_id", put(put_device))
-        .route("/v1/link/ticket", post(link_ticket));
+        .route("/v1/link/ticket", post(link_ticket))
+        .route("/v1/group/restart", post(restart_group));
     if state.dev_login {
         r = r.route("/v1/auth/dev", post(auth_dev));
     }
@@ -135,6 +136,7 @@ impl From<StoreError> for ApiError {
         match e {
             StoreError::TooManyDevices => Self::new(StatusCode::CONFLICT, "too_many_devices"),
             StoreError::NoUser => Self::unauthorized(),
+            StoreError::Retired => Self::new(StatusCode::CONFLICT, "device_retired"),
             e => {
                 tracing::error!("store: {e}");
                 Self::new(StatusCode::INTERNAL_SERVER_ERROR, "internal")
@@ -448,6 +450,16 @@ async fn delete_me(State(s): State<Arc<AppState>>, headers: HeaderMap) -> ApiRes
 struct DeviceBody {
     name: String,
     platform: String,
+    /// 이 기기가 그룹에 있는가 (F44). 없으면 바꾸지 않는다(예전 앱)
+    #[serde(default)]
+    in_group: Option<bool>,
+}
+
+fn valid_device_id(id: &str) -> bool {
+    id.len() == 32
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 
 async fn put_device(
@@ -457,11 +469,7 @@ async fn put_device(
     Json(body): Json<DeviceBody>,
 ) -> ApiResult<Json<Device>> {
     let user_id = bearer_user(&s, &headers)?;
-    if device_id.len() != 32
-        || !device_id
-            .bytes()
-            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
-    {
+    if !valid_device_id(&device_id) {
         return Err(ApiError::bad("bad_device_id"));
     }
     let name = body.name.trim();
@@ -473,9 +481,37 @@ async fn put_device(
     }
     let d = s
         .store
-        .upsert_device(&user_id, &device_id, name, &body.platform, crate::now_ms())
+        .upsert_device(
+            &user_id,
+            &device_id,
+            name,
+            &body.platform,
+            body.in_group,
+            crate::now_ms(),
+        )
         .await?;
     Ok(Json(d))
+}
+
+#[derive(Deserialize)]
+struct RestartBody {
+    device_id: String,
+}
+
+/// 처음부터 다시 시작(F44, D-027): 이 계정의 다른 기기를 예전 그룹으로 표시한다.
+/// 그 기기들은 다음 등록 때 `409 device_retired`를 받고 그룹을 떠난다.
+async fn restart_group(
+    State(s): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(body): Json<RestartBody>,
+) -> ApiResult<StatusCode> {
+    let user_id = bearer_user(&s, &headers)?;
+    if !valid_device_id(&body.device_id) {
+        return Err(ApiError::bad("bad_device_id"));
+    }
+    let n = s.store.restart_group(&user_id, &body.device_id).await?;
+    tracing::info!(retired = n, "group restarted");
+    Ok(StatusCode::NO_CONTENT)
 }
 
 /// 계정 연결(F37): 이 계정에 로그인한 새 기기의 공개키에 서명해 준다.

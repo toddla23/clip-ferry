@@ -29,7 +29,7 @@ export default function Repair({ view }: { view: AppView }) {
         더 이상 보내거나 받지 않습니다.
       </p>
       <p className="note">
-        다시 쓰려면 이 기기의 그룹 정보를 지운 뒤, 이미 쓰는 기기에서 초대 코드를 받아 참여하세요.
+        다시 쓰려면 이 기기의 그룹 정보를 지운 뒤, 시작 화면에서 '이 계정의 다른 기기로 연결'을 누르세요.
         이 기기의 이름({view.deviceName})은 그대로입니다.
       </p>
       {!confirm ? (

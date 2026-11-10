@@ -2,7 +2,6 @@
 
 use clip_ferry_core::api::{ClipFerry, Error, GroupHealth};
 use clip_ferry_core::session::ConnectionStatus;
-use qrcode::{Color, QrCode};
 use serde::Serialize;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
@@ -76,25 +75,6 @@ pub struct DeviceView {
     pub online: bool,
 }
 
-/// QR 코드. `path`는 어두운 칸마다 1×1 사각형을 그리는 SVG 경로이고, 그림 크기는 `width`×`width`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct Qr {
-    pub width: usize,
-    pub path: String,
-}
-
-pub fn qr(data: &str) -> Option<Qr> {
-    let code = QrCode::new(data.as_bytes()).ok()?;
-    let width = code.width();
-    let mut path = String::new();
-    for (i, c) in code.to_colors().into_iter().enumerate() {
-        if c == Color::Dark {
-            path.push_str(&format!("M{} {}h1v1h-1z", i % width, i / width));
-        }
-    }
-    Some(Qr { width, path })
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum PairKind {
@@ -121,8 +101,6 @@ pub enum PairPhase {
 pub struct PairingView {
     pub kind: PairKind,
     pub phase: PairPhase,
-    pub text_code: Option<String>,
-    pub qr: Option<Qr>,
     pub expires_at_ms: Option<u64>,
     /// 상대 기기 이름
     pub peer_name: Option<String>,
@@ -136,8 +114,6 @@ impl PairingView {
         Self {
             kind,
             phase,
-            text_code: None,
-            qr: None,
             expires_at_ms: None,
             peer_name: None,
             sas: None,
@@ -185,6 +161,9 @@ pub struct AppView {
     pub show_server_settings: bool,
     /// 같은 계정의 새 기기가 보낸 참여 요청 (F37)
     pub link_request: Option<LinkRequestView>,
+    /// 이 계정에 그룹에 있는 다른 기기가 있는가 (F44). 모르면(계정 서버에 아직 묻지 못함) `None`.
+    /// 있으면 마법사가 `새 그룹 만들기`를 숨긴다.
+    pub account_has_group: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -341,17 +320,11 @@ mod tests {
             "loginMessage",
             "devLogin",
             "showServerSettings",
+            "accountHasGroup",
         ] {
             assert!(json.get(key).is_some(), "{key}");
         }
         assert!(json.get("deviceName").is_some() && json.get("relayUrl").is_some());
         assert!(json.get("defaultName").is_some());
-    }
-
-    #[test]
-    fn qr_covers_the_code_with_a_path() {
-        let q = qr("clipferry://pair/1/AAAA").unwrap();
-        assert!(q.width >= 21);
-        assert!(q.path.starts_with('M') && q.path.contains("h1v1h-1z"));
     }
 }

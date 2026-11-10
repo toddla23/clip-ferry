@@ -521,30 +521,96 @@ impl Account {
     }
 
     /// 이 기기를 계정의 기기 목록에 올린다(이름·플랫폼). `device_id`는 32자 hex.
-    pub async fn register_device(&self, device_id: &str, name: &str) -> Result<(), TokenError> {
+    /// `in_group`: 이 기기가 그룹에 있는가(F44). 다른 기기에서 처음부터 다시 시작했으면
+    /// `Ok(Registered::Retired)` — 이 기기는 그룹을 떠나야 한다.
+    pub async fn register_device(
+        &self,
+        device_id: &str,
+        name: &str,
+        in_group: bool,
+    ) -> Result<Registered, TokenError> {
         let token = self.token().await?;
-        let url = self
-            .data
-            .lock()
-            .unwrap()
-            .saved
-            .as_ref()
-            .map(|s| s.account_url.clone())
-            .ok_or(TokenError::SignedOut)?;
+        let url = self.account_url()?;
         let resp = self
             .http
             .put(format!("{url}/v1/devices/{device_id}"))
             .bearer_auth(token)
-            .json(&serde_json::json!({ "name": name, "platform": PLATFORM }))
+            .json(&serde_json::json!({ "name": name, "platform": PLATFORM, "in_group": in_group }))
             .send()
             .await
             .map_err(|_| TokenError::Unavailable)?;
         if resp.status().is_success() {
-            Ok(())
-        } else {
-            Err(TokenError::Unavailable)
+            return Ok(Registered::Ok);
         }
+        if resp.status() == reqwest::StatusCode::CONFLICT {
+            #[derive(Deserialize)]
+            struct Body {
+                error: String,
+            }
+            if resp
+                .json::<Body>()
+                .await
+                .is_ok_and(|b| b.error == "device_retired")
+            {
+                return Ok(Registered::Retired);
+            }
+        }
+        Err(TokenError::Unavailable)
     }
+
+    /// 이 계정에 그룹에 있는 다른 기기가 있는가 (F44, `GET /v1/me`).
+    pub async fn account_has_group(&self, own_device_id: &str) -> Result<bool, TokenError> {
+        #[derive(Deserialize)]
+        struct Dev {
+            device_id: String,
+            #[serde(default)]
+            in_group: bool,
+        }
+        #[derive(Deserialize)]
+        struct Me {
+            devices: Vec<Dev>,
+        }
+        let token = self.token().await?;
+        let url = self.account_url()?;
+        let me: Me = self
+            .http
+            .get(format!("{url}/v1/me"))
+            .bearer_auth(token)
+            .send()
+            .await
+            .and_then(|r| r.error_for_status())
+            .map_err(|_| TokenError::Unavailable)?
+            .json()
+            .await
+            .map_err(|_| TokenError::Unavailable)?;
+        Ok(me
+            .devices
+            .iter()
+            .any(|d| d.in_group && d.device_id != own_device_id))
+    }
+
+    /// 처음부터 다시 시작 (F44, `POST /v1/group/restart`): 이 계정의 다른 기기를 예전 그룹으로 표시한다.
+    pub async fn restart_group(&self, device_id: &str) -> Result<(), TokenError> {
+        let token = self.token().await?;
+        let url = self.account_url()?;
+        self.http
+            .post(format!("{url}/v1/group/restart"))
+            .bearer_auth(token)
+            .json(&serde_json::json!({ "device_id": device_id }))
+            .send()
+            .await
+            .and_then(|r| r.error_for_status())
+            .map_err(|_| TokenError::Unavailable)?;
+        Ok(())
+    }
+}
+
+/// 기기 등록 결과 (F44)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Registered {
+    Ok,
+    /// 다른 기기에서 처음부터 다시 시작했다. 이 기기는 예전 그룹을 떠나야 한다
+    Retired,
 }
 
 // ---------------------------------------------------------------- OAuth 도우미
@@ -913,7 +979,10 @@ mod tests {
         assert!(again.is_signed_in());
         again.token().await.unwrap();
         let dev = "00112233445566778899aabbccddeeff";
-        again.register_device(dev, "내 PC").await.unwrap();
+        assert_eq!(
+            again.register_device(dev, "내 PC", false).await.unwrap(),
+            Registered::Ok
+        );
 
         // 로그아웃: 저장소에서 지우고, 서버에서도 그 로그인이 끊긴다
         again.logout().await;
@@ -966,6 +1035,40 @@ mod tests {
             .link_ticket(&keys.sign_public(), &keys.dh_public(), "새 PC")
             .await
             .is_err());
+    }
+
+    /// F44: 그룹 상태를 알리고, 다른 기기가 처음부터 다시 시작하면 이 기기는 `Retired`를 받는다.
+    #[tokio::test]
+    async fn one_group_and_restart() {
+        let url = account_server().await;
+        let pc = Account::new(Box::new(MemorySecretStore::default()));
+        let phone = Account::new(Box::new(MemorySecretStore::default()));
+        pc.dev_login(&url, "me@test.dev").await.unwrap();
+        phone.dev_login(&url, "me@test.dev").await.unwrap();
+        let (pc_id, phone_id) = (
+            "000000000000000000000000000000a1",
+            "000000000000000000000000000000b2",
+        );
+        assert!(!phone.account_has_group(phone_id).await.unwrap());
+        pc.register_device(pc_id, "PC", true).await.unwrap();
+        assert!(phone.account_has_group(phone_id).await.unwrap());
+        assert!(
+            !pc.account_has_group(pc_id).await.unwrap(),
+            "자기 자신은 세지 않는다"
+        );
+
+        phone.register_device(phone_id, "폰", false).await.unwrap();
+        phone.restart_group(phone_id).await.unwrap();
+        phone.register_device(phone_id, "폰", true).await.unwrap();
+        assert_eq!(
+            pc.register_device(pc_id, "PC", true).await.unwrap(),
+            Registered::Retired
+        );
+        assert_eq!(
+            pc.register_device(pc_id, "PC", false).await.unwrap(),
+            Registered::Ok
+        );
+        assert!(pc.account_has_group(pc_id).await.unwrap());
     }
 
     #[tokio::test]

@@ -78,12 +78,6 @@ dependencies {
     // UniFFI가 만든 Kotlin 바인딩이 쓰는 JNA (안드로이드는 aar로 네이티브 조각이 들어 있다).
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.11.0")
     implementation("net.java.dev.jna:jna:5.19.1@aar")
-    // 페어링 QR 스캔 (F16). ML Kit은 모델을 앱에 넣는 번들판이라 Play 서비스 없이 기기 안에서만 인식한다.
-    val camerax = "1.6.2"
-    implementation("androidx.camera:camera-camera2:$camerax")
-    implementation("androidx.camera:camera-lifecycle:$camerax")
-    implementation("androidx.camera:camera-view:$camerax")
-    implementation("com.google.mlkit:barcode-scanning:17.3.0")
     // 구글 로그인 (F35). Credential Manager + Google ID. 구글 Play 서비스가 계정 선택 창을 띄운다.
     implementation("androidx.credentials:credentials:1.5.0")
     implementation("androidx.credentials:credentials-play-services-auth:1.5.0")

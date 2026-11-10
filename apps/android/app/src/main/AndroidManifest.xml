@@ -8,8 +8,6 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <!-- 페어링 QR 스캔 (F16). 거부하면 코드 입력으로 참여한다. -->
-    <uses-permission android:name="android.permission.CAMERA" />
-    <uses-feature android:name="android.hardware.camera" android:required="false" />
 
     <application
         android:name=".ClipFerryApp"

@@ -21,9 +21,9 @@ import uniffi.clip_ferry_ffi.Health
 import uniffi.clip_ferry_ffi.LinkStatus
 import uniffi.clip_ferry_ffi.PairEvent
 import uniffi.clip_ferry_ffi.PairListener
-import uniffi.clip_ferry_ffi.QrMatrix
 import uniffi.clip_ferry_ffi.StatusInfo
-import uniffi.clip_ferry_ffi.qrMatrix
+import uniffi.clip_ferry_ffi.isUnrecoverableState
+import uniffi.clip_ferry_ffi.resetLocalData
 
 enum class Link { STOPPED, RECONNECTING, CONNECTED }
 
@@ -44,8 +44,6 @@ enum class PairPhase {
 data class PairUi(
     val kind: PairKind,
     val phase: PairPhase,
-    val textCode: String? = null,
-    val qr: QrMatrix? = null,
     val expiresAtMs: Long? = null,
     val peerName: String? = null,
     /** 6자리 확인 숫자 */
@@ -89,6 +87,12 @@ data class UiState(
     val linkRequest: String? = null,
     /** 서버 주소 칸을 보인다 (디버그 빌드이거나 제목을 7번 눌렀을 때, F43). */
     val showServerSettings: Boolean = false,
+    /** 이 계정에 그룹에 있는 다른 기기가 있는가 (F44). 모르면 `null`. 있으면 `새 그룹 만들기`를 숨긴다. */
+    val accountHasGroup: Boolean? = null,
+    /** 첫 실행 화면에 보여 줄 안내 (다른 기기에서 처음부터 다시 시작해 예전 그룹에서 나왔을 때, F44). */
+    val setupNotice: String? = null,
+    /** 저장된 정보가 일부만 남아 코어를 열 수 없다 (F44). 처음부터 다시 시작해야 한다. */
+    val brokenState: String? = null,
 ) {
     /** 그룹이 있다(제거된 그룹 포함). 없으면 첫 실행 화면을 보여 준다. */
     val hasGroup: Boolean get() = status?.epoch != null
@@ -110,14 +114,6 @@ object CoreController : CoreEvents {
     @Volatile
     private var client: ClipFerryClient? = null
 
-    /** 참여가 끝나면 이 주소를 릴레이 설정으로 저장한다(QR에 들어 있던 주소). */
-    @Volatile
-    private var joinRelay: String? = null
-
-    /** 지금 참여가 계정 연결(F37)로 진행 중인가 (안내 문구가 다르다). */
-    @Volatile
-    private var linkJoin = false
-
     private val mutableState = MutableStateFlow(UiState())
     val state: StateFlow<UiState> = mutableState
 
@@ -133,26 +129,47 @@ object CoreController : CoreEvents {
             accountUrl = settings.accountUrl,
             showServerSettings = BuildConfig.DEBUG || settings.showServer,
         )
+        opened()
+    }
+
+    /** 코어를 연 뒤 상태를 읽는다. 저장된 정보가 일부만 남았으면 처음부터 다시 시작할지 묻는다 (F44). */
+    private fun opened() {
         try {
             val c = ensureOpen()
-            mutableState.update { it.copy(account = c.account()) }
+            mutableState.update { it.copy(account = c.account(), brokenState = null) }
             refresh()
             refreshServerConfig()
+            refreshAccountGroup()
         } catch (e: FfiException) {
-            fail(e.userMessage())
+            if (isUnrecoverableState(e)) {
+                mutableState.update { it.copy(brokenState = e.userMessage()) }
+            } else {
+                fail(e.userMessage())
+            }
         } catch (e: UnsatisfiedLinkError) {
             fail("코어 라이브러리를 불러오지 못했습니다")
         }
     }
 
+    private val dataDir: String get() = File(appContext.filesDir, "clip-ferry").absolutePath
+
     /** 코어를 연다. 기기·그룹은 만들지 않는다(첫 실행 화면에서 정한다). */
     @Synchronized
     private fun ensureOpen(): ClipFerryClient {
         client?.let { return it }
-        val dir = File(appContext.filesDir, "clip-ferry").absolutePath
-        val opened = ClipFerryClient.open(dir, KeystoreVault(appContext))
+        val opened = ClipFerryClient.open(dataDir, KeystoreVault(appContext))
         client = opened
         return opened
+    }
+
+    /**
+     * 저장된 정보가 일부만 남아 열 수 없을 때 이 기기의 그룹 정보를 지우고 처음부터 시작한다 (F44).
+     * 로그인 정보는 지우지 않는다. 실패하면 이유를 돌려준다.
+     */
+    @Synchronized
+    fun resetBrokenState(): String? = guard {
+        resetLocalData(dataDir, KeystoreVault(appContext))
+        opened()
     }
 
     /** 첫 실행 화면에 미리 채워 둘 기기 이름. */
@@ -385,6 +402,7 @@ object CoreController : CoreEvents {
             }
             refresh()
             refreshServerConfig()
+            refreshAccountGroup()
             // 기존 사용자(그룹이 있음)는 바로 이어서 연결한다. 없으면 첫 실행 화면으로 간다.
             if (mutableState.value.hasGroup && mutableState.value.serviceEnabled) startService()
         }.onFailure { e ->
@@ -408,6 +426,7 @@ object CoreController : CoreEvents {
                 loginMessage = null,
                 authRejected = false,
                 linkRequest = null,
+                accountHasGroup = null,
             )
         }
         refresh()
@@ -415,14 +434,56 @@ object CoreController : CoreEvents {
 
     // ------------------------------------------------------- 첫 실행 · 그룹
 
-    /** 새 그룹을 만들고 연결을 켠다. 실패하면 이유를 돌려준다. */
+    /**
+     * 새 그룹을 만들고 연결을 켠다. 이 계정에 이미 그룹이 있으면 만들지 않는다 (F44, 계정 하나당 그룹 하나).
+     * 실패하면 이유를 돌려준다.
+     */
     @Synchronized
     fun createGroup(name: String): String? = guard {
+        when (mutableState.value.accountHasGroup) {
+            false -> {}
+            true -> throw FfiException.Failed(
+                "이 계정에는 이미 그룹이 있습니다. '이 계정의 다른 기기로 연결'을 누르세요",
+            )
+            null -> {
+                refreshAccountGroup()
+                throw FfiException.Failed("서버에 연결하지 못했습니다. 잠시 뒤 다시 시도하세요")
+            }
+        }
         val c = ensureOpen()
         ensureDevice(c, name)
         if (c.status().epoch == null) c.createGroup()
+        mutableState.update { it.copy(setupNotice = null) }
         refresh()
         startService()
+    }
+
+    /**
+     * 처음부터 다시 시작 (F44, D-027): 승인해 줄 기기가 없을 때. 이 계정의 다른 기기는 다음에 켜질 때
+     * 예전 그룹을 떠나고, 이 기기에서 새 그룹을 만든다. 네트워크를 쓰므로 작업 스레드에서 부른다.
+     */
+    fun restartGroup(name: String): String? = guard {
+        val c = ensureOpen()
+        synchronized(this) { ensureDevice(c, name) }
+        c.restartGroup()
+        mutableState.update { it.copy(setupNotice = null, accountHasGroup = false) }
+        refresh()
+        startService()
+    }
+
+    /** 이 계정에 그룹에 있는 다른 기기가 있는지 계정 서버에 묻는다 (F44). 첫 실행 화면에서만 쓴다. */
+    fun refreshAccountGroup() {
+        val c = client ?: return
+        val s = mutableState.value
+        if (!s.signedIn || s.hasGroup) return
+        thread(name = "account-group", isDaemon = true) {
+            val has = try {
+                c.accountHasGroup()
+            } catch (e: Exception) {
+                null
+            } ?: return@thread
+            mutableState.update { it.copy(accountHasGroup = has) }
+        }
     }
 
     /** 그룹에서 나가 첫 실행 화면으로 돌아간다 (제거됨·혼자인 그룹·다시 페어링). */
@@ -431,52 +492,18 @@ object CoreController : CoreEvents {
         ClipFerryService.stop(appContext)
         val c = ensureOpen()
         c.leaveGroup()
-        mutableState.update { it.copy(link = Link.STOPPED, online = 0, pairing = null, error = null) }
+        mutableState.update {
+            it.copy(link = Link.STOPPED, online = 0, pairing = null, error = null, accountHasGroup = null)
+        }
         refresh()
+        refreshAccountGroup()
     }
 
     // ------------------------------------------------------- 페어링
 
-    /** 이 그룹에 다른 기기를 초대한다. 초대(QR)에는 지금 릴레이 주소가 들어간다. */
-    @Synchronized
-    fun startInvite(): String? = guard {
-        val c = ensureOpen()
-        if (!c.hasGroup()) throw FfiException.Failed("먼저 그룹이 있어야 합니다")
-        val info = c.startInvite(settings.relayUrl, pairListener)
-        mutableState.update {
-            it.copy(
-                pairing = PairUi(
-                    kind = PairKind.INVITE,
-                    phase = PairPhase.WAITING,
-                    textCode = info.textCode,
-                    qr = qrMatrix(info.qrString),
-                    expiresAtMs = info.expiresAtMs.toLong(),
-                ),
-            )
-        }
-    }
-
     /** 초대 요청을 승인(`true`)하거나 거절(`false`)한다. */
     fun decideInvite(approve: Boolean) {
         client?.decideInvite(approve)
-    }
-
-    /**
-     * 초대 코드(QR 문자열 또는 텍스트 코드)로 참여를 시작한다. 기기가 없으면 [name]으로 만든다.
-     * 실패하면 이유(잘못된 코드 등)를 돌려준다.
-     */
-    @Synchronized
-    fun startJoin(name: String, code: String): String? = guard {
-        val c = ensureOpen()
-        ensureDevice(c, name)
-        mutableState.update { it.copy(pairing = PairUi(PairKind.JOIN, PairPhase.CONNECTING)) }
-        try {
-            joinRelay = c.startJoin(code, settings.relayUrl, pairListener)
-        } catch (e: Exception) {
-            mutableState.update { it.copy(pairing = null) }
-            throw e
-        }
-        refresh()
     }
 
     // ------------------------------------------------------- 계정 연결 (F37)
@@ -488,7 +515,6 @@ object CoreController : CoreEvents {
     fun startLinkJoin(name: String): String? = guard {
         val c = ensureOpen()
         synchronized(this) { ensureDevice(c, name) }
-        linkJoin = true
         mutableState.update {
             it.copy(
                 pairing = PairUi(
@@ -500,9 +526,7 @@ object CoreController : CoreEvents {
         }
         try {
             c.startLinkJoin(settings.relayUrl, pairListener)
-            joinRelay = settings.relayUrl
         } catch (e: Exception) {
-            linkJoin = false
             mutableState.update { it.copy(pairing = null) }
             throw e
         }
@@ -539,8 +563,6 @@ object CoreController : CoreEvents {
     @Synchronized
     fun closePairing() {
         client?.cancelPairing()
-        joinRelay = null
-        linkJoin = false
         mutableState.update { it.copy(pairing = null) }
         refresh()
     }
@@ -551,12 +573,8 @@ object CoreController : CoreEvents {
             when (event) {
                 is PairEvent.Connected -> updatePairing {
                     it.copy(
-                        message = if (linkJoin) {
-                            "같은 계정의 다른 기기에서 '연결'을 눌러 주기를 기다리는 중입니다. " +
-                                "그 기기에서 clip-ferry가 켜져 있어야 합니다"
-                        } else {
-                            "초대한 기기의 응답을 기다리는 중입니다"
-                        },
+                        message = "같은 계정의 다른 기기에서 '연결'을 눌러 주기를 기다리는 중입니다. " +
+                            "그 기기에서 clip-ferry가 켜져 있어야 합니다",
                     )
                 }
                 is PairEvent.Request -> updatePairing {
@@ -577,7 +595,7 @@ object CoreController : CoreEvents {
                             peerName = event.peerName,
                             message = if (event.delivered) null else
                                 "승인했지만 상대 기기가 응답을 받지 못했을 수 있습니다. " +
-                                    "상대 앱을 확인하고, 안 되면 데스크톱에서 기기를 제거한 뒤 다시 초대하세요",
+                                    "상대 앱을 확인하고, 안 되면 데스크톱에서 기기를 제거한 뒤 다시 연결하세요",
                         )
                     }
                     refresh()
@@ -586,14 +604,8 @@ object CoreController : CoreEvents {
                     it.copy(phase = PairPhase.FAILED, message = "참여 요청을 거절했습니다")
                 }
                 is PairEvent.Joined -> {
-                    // 그룹에 들어왔다. QR의 릴레이를 저장하고 진행 화면을 닫은 뒤 연결한다.
-                    joinRelay?.let { relay ->
-                        settings.relayUrl = relay
-                        mutableState.update { it.copy(relayUrl = relay) }
-                    }
-                    joinRelay = null
-                    linkJoin = false
-                    mutableState.update { it.copy(pairing = null) }
+                    // 그룹에 들어왔다. 진행 화면을 닫은 뒤 연결한다.
+                    mutableState.update { it.copy(pairing = null, setupNotice = null) }
                     refresh()
                     startService()
                 }
@@ -701,6 +713,23 @@ object CoreController : CoreEvents {
             )
         }
         Handler(Looper.getMainLooper()).post { ClipFerryService.stop(appContext) }
+    }
+
+    /** 다른 기기에서 처음부터 다시 시작했다 (F44). 코어는 세션을 닫고 그룹을 떠났다. 첫 실행 화면으로 간다. */
+    override fun onGroupRetired(message: String) {
+        mutableState.update {
+            it.copy(
+                link = Link.STOPPED,
+                online = 0,
+                pairing = null,
+                linkRequest = null,
+                accountHasGroup = null,
+                setupNotice = message,
+            )
+        }
+        Handler(Looper.getMainLooper()).post { ClipFerryService.stop(appContext) }
+        refresh()
+        refreshAccountGroup()
     }
 }
 

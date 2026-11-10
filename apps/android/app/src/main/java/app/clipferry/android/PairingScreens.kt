@@ -1,24 +1,17 @@
 package app.clipferry.android
 
-import android.Manifest
-import android.content.pm.PackageManager
 import androidx.activity.compose.BackHandler
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -28,53 +21,64 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
-import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.core.content.ContextCompat
 import androidx.compose.runtime.rememberCoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import uniffi.clip_ferry_ffi.DeviceEntry
-import uniffi.clip_ferry_ffi.QrMatrix
 
 // ------------------------------------------------------------ 첫 실행
 
 /**
- * 그룹이 아직 없을 때: 이름을 정하고, 같은 계정의 다른 기기로 연결(F37)하거나
- * 참여(QR·코드)하거나 새 그룹을 만든다.
+ * 그룹이 아직 없을 때: 이름을 정하고, 같은 계정의 다른 기기로 연결(F37)한다. 이 계정에 아직 그룹이
+ * 없으면 새 그룹을 만든다(계정 하나당 그룹 하나, F44). 승인해 줄 기기가 없으면 처음부터 다시 시작한다.
  */
 @Composable
 fun SetupScreen(
     state: UiState,
     name: String,
     onNameChange: (String) -> Unit,
-    onScan: () -> Unit,
-    onEnterCode: () -> Unit,
 ) {
     var error by remember { mutableStateOf<String?>(null) }
-    var linking by remember { mutableStateOf(false) }
+    var busy by remember { mutableStateOf(false) }
+    // 처음부터 다시 시작: 0 = 닫힘, 1 = 설명, 2 = 마지막 확인
+    var restart by rememberSaveable { mutableStateOf(0) }
     val scope = rememberCoroutineScope()
     val initialized = state.status != null
+    val has = state.accountHasGroup
+
+    // 계정 서버에 아직 못 물었으면 화면이 보일 때 다시 묻는다.
+    LaunchedEffect(has) { if (has == null) CoreController.refreshAccountGroup() }
+
+    fun work(block: () -> String?) {
+        busy = true
+        error = null
+        scope.launch {
+            error = withContext(Dispatchers.IO) { block() }
+            busy = false
+        }
+    }
+
     Text("처음 설정", style = MaterialTheme.typography.headlineSmall)
+    state.setupNotice?.let {
+        Card(modifier = Modifier.fillMaxWidth()) {
+            Text(it, modifier = Modifier.padding(16.dp), color = MaterialTheme.colorScheme.error)
+        }
+    }
     Text(
-        "같은 계정으로 쓰는 기기(PC 등)가 있으면 '이 계정의 다른 기기로 연결'을 누르세요. " +
-            "또는 그 기기에서 '기기 추가'를 누른 뒤 QR을 스캔하거나 코드를 입력하세요.",
+        if (has == false) "이 계정의 첫 기기입니다. 이름을 정하고 새 그룹을 만드세요."
+        else "같은 계정으로 쓰는 기기(PC 등)로 연결하세요. 그 기기에서 clip-ferry가 켜져 있어야 합니다.",
     )
     Card(modifier = Modifier.fillMaxWidth()) {
         Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -92,138 +96,96 @@ fun SetupScreen(
             }
         }
     }
-    Button(
-        onClick = {
-            linking = true
-            error = null
-            scope.launch {
-                error = withContext(Dispatchers.IO) { CoreController.startLinkJoin(name) }
-                linking = false
+    when {
+        has == null -> Text("계정 정보를 확인하는 중입니다…")
+        has == false -> Button(
+            onClick = { work { CoreController.createGroup(name) } },
+            enabled = !busy,
+            modifier = Modifier.fillMaxWidth(),
+        ) { Text("새 그룹 만들기") }
+        restart == 0 -> {
+            Button(
+                onClick = { work { CoreController.startLinkJoin(name) } },
+                enabled = !busy,
+                modifier = Modifier.fillMaxWidth(),
+            ) { Text("이 계정의 다른 기기로 연결") }
+            TextButton(onClick = { restart = 1 }, modifier = Modifier.fillMaxWidth()) {
+                Text("다른 기기를 쓸 수 없나요? (처음부터 다시 시작)")
             }
-        },
-        enabled = !linking,
-        modifier = Modifier.fillMaxWidth(),
-    ) { Text("이 계정의 다른 기기로 연결") }
-    OutlinedButton(onClick = onScan, modifier = Modifier.fillMaxWidth()) { Text("QR로 참여") }
-    OutlinedButton(onClick = onEnterCode, modifier = Modifier.fillMaxWidth()) {
-        Text("코드 입력으로 참여")
+        }
+        restart == 1 -> Card(modifier = Modifier.fillMaxWidth()) {
+            Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("처음부터 다시 시작", style = MaterialTheme.typography.titleMedium)
+                Text(
+                    "이 계정의 다른 기기를 모두 잃었거나 쓸 수 없을 때만 하세요. 이 기기에서 새 그룹을 " +
+                        "만들고, 이 계정의 다른 기기들은 다음에 켜질 때 예전 그룹에서 나옵니다. " +
+                        "그 기기들은 다시 연결해야 합니다.",
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                    OutlinedButton(onClick = { restart = 0 }, modifier = Modifier.weight(1f)) { Text("취소") }
+                    Button(onClick = { restart = 2 }, modifier = Modifier.weight(1f)) { Text("계속") }
+                }
+            }
+        }
+        else -> Card(modifier = Modifier.fillMaxWidth()) {
+            Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("정말 처음부터 다시 시작할까요?", style = MaterialTheme.typography.titleMedium)
+                Text(
+                    "되돌릴 수 없습니다. 다른 기기들은 예전 그룹에서 나오게 됩니다.",
+                    color = MaterialTheme.colorScheme.error,
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                    OutlinedButton(
+                        onClick = { restart = 0 },
+                        enabled = !busy,
+                        modifier = Modifier.weight(1f),
+                    ) { Text("취소") }
+                    Button(
+                        onClick = { work { CoreController.restartGroup(name) } },
+                        enabled = !busy,
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = MaterialTheme.colorScheme.error,
+                        ),
+                        modifier = Modifier.weight(1f),
+                    ) { Text("다시 시작") }
+                }
+            }
+        }
     }
-    TextButton(
-        onClick = { error = CoreController.createGroup(name) },
-        modifier = Modifier.fillMaxWidth(),
-    ) { Text("새 그룹 만들기 (이 기기가 처음일 때)") }
     error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
 }
 
-// ------------------------------------------------------------ 참여 (QR · 코드)
-
-enum class JoinMode { SCAN, CODE }
-
-/**
- * 참여 화면. [JoinMode.SCAN]이면 카메라 권한을 받아 QR을 읽고, 권한이 없으면 코드 입력으로 바꾼다.
- */
+/** 저장된 정보가 일부만 남아 열 수 없을 때 (F44): 이 기기의 그룹 정보를 지우고 처음부터 시작한다. */
 @Composable
-fun JoinScreen(
-    name: String,
-    /** 서버 주소를 숨길 때(F43)는 `null` */
-    relayUrl: String?,
-    initialMode: JoinMode,
-    onBack: () -> Unit,
-) {
-    val context = LocalContext.current
-    BackHandler(onBack = onBack)
-    var mode by rememberSaveable { mutableStateOf(initialMode) }
-    var notice by remember { mutableStateOf<String?>(null) }
+fun BrokenStateScreen(reason: String) {
     var error by remember { mutableStateOf<String?>(null) }
-    var granted by remember {
-        mutableStateOf(
-            ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) ==
-                PackageManager.PERMISSION_GRANTED
-        )
-    }
-    val cameraPermission = rememberLauncherForActivityResult(
-        ActivityResultContracts.RequestPermission()
-    ) { ok ->
-        granted = ok
-        if (!ok) {
-            mode = JoinMode.CODE
-            notice = "카메라 권한이 없어 QR을 스캔할 수 없습니다. " +
-                "초대한 기기에 표시된 코드를 입력하세요. (설정 → 앱 → clip-ferry → 권한에서 카메라를 켤 수 있습니다)"
-        }
-    }
-    LaunchedEffect(mode) {
-        if (mode == JoinMode.SCAN && !granted) cameraPermission.launch(Manifest.permission.CAMERA)
-    }
-
-    val join = { code: String -> error = CoreController.startJoin(name, code) }
-
+    var confirm by remember { mutableStateOf(false) }
+    Text("저장된 정보를 열 수 없습니다", style = MaterialTheme.typography.headlineSmall)
     Text(
-        if (mode == JoinMode.SCAN) "QR로 참여" else "코드 입력으로 참여",
-        style = MaterialTheme.typography.headlineSmall,
+        "이 기기에 저장한 정보의 일부가 없거나 손상되었습니다. 이 기기의 그룹 정보를 지우고 처음부터 " +
+            "시작하면 다시 쓸 수 있습니다. 시작 화면에서 '이 계정의 다른 기기로 연결'을 누르면 다시 들어옵니다.",
     )
-    notice?.let {
-        Card(modifier = Modifier.fillMaxWidth()) {
-            Text(it, modifier = Modifier.padding(16.dp))
+    Text(reason, style = MaterialTheme.typography.bodySmall)
+    if (!confirm) {
+        Button(onClick = { confirm = true }, modifier = Modifier.fillMaxWidth()) {
+            Text("처음부터 시작")
         }
-    }
-
-    if (mode == JoinMode.SCAN && granted) {
-        Text("초대한 기기 화면의 QR을 네모 안에 비추세요.")
-        var hint by remember { mutableStateOf<String?>(null) }
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .aspectRatio(1f)
-                .background(Color.Black),
-        ) {
-            QrScanner(
-                modifier = Modifier.fillMaxWidth().aspectRatio(1f),
-                onInvite = { join(it) },
-                onOtherQr = { hint = "clip-ferry 초대 QR이 아닙니다" },
-                onCameraError = {
-                    mode = JoinMode.CODE
-                    notice = it
-                },
-            )
-        }
-        hint?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
-        OutlinedButton(onClick = { mode = JoinMode.CODE }, modifier = Modifier.fillMaxWidth()) {
-            Text("대신 코드 입력하기")
-        }
-    } else if (mode == JoinMode.CODE) {
-        var code by rememberSaveable { mutableStateOf("") }
-        Text("초대한 기기에 표시된 코드(4자씩 묶인 53자)를 입력하세요. 하이픈과 대소문자는 무시합니다.")
-        OutlinedTextField(
-            value = code,
-            onValueChange = { code = it; error = null },
-            modifier = Modifier.fillMaxWidth(),
-            textStyle = MaterialTheme.typography.bodyLarge.copy(fontFamily = FontFamily.Monospace),
-            keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Characters),
-            minLines = 2,
-        )
+    } else {
         Button(
-            onClick = { join(code) },
-            enabled = code.isNotBlank(),
+            onClick = { error = CoreController.resetBrokenState() },
+            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
             modifier = Modifier.fillMaxWidth(),
-        ) { Text("참여") }
-        relayUrl?.let {
-            Text("코드로 참여하면 이 릴레이를 씁니다: $it", style = MaterialTheme.typography.bodySmall)
+        ) { Text("이 기기의 그룹 정보 지우기") }
+        OutlinedButton(onClick = { confirm = false }, modifier = Modifier.fillMaxWidth()) {
+            Text("취소")
         }
-        OutlinedButton(
-            onClick = {
-                notice = null
-                mode = JoinMode.SCAN
-            },
-            modifier = Modifier.fillMaxWidth(),
-        ) { Text("QR 스캔으로 바꾸기") }
     }
     error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-    TextButton(onClick = onBack) { Text("뒤로") }
 }
 
 // ------------------------------------------------------------ 진행 중인 페어링
 
-/** 초대(QR·코드 표시 → 요청 승인)와 참여(확인 숫자 → 승인 대기) 진행 화면. */
+/** 계정 연결 진행 화면: 받는 쪽(요청 승인)과 들어가는 쪽(확인 숫자 → 승인 대기). */
 @Composable
 fun PairingScreen(pairing: PairUi) {
     BackHandler { CoreController.closePairing() }
@@ -236,34 +198,10 @@ fun PairingScreen(pairing: PairUi) {
 @Composable
 private fun InviteContent(p: PairUi) {
     Text("기기 추가", style = MaterialTheme.typography.headlineSmall)
-    // 계정 연결(F37): QR·코드 없이 새 기기의 응답을 기다린다.
-    if (p.textCode == null && (p.phase == PairPhase.WAITING || p.phase == PairPhase.CONNECTING)) {
-        Text("'${p.peerName}' 기기에 연결하는 중입니다.", style = MaterialTheme.typography.titleMedium)
-        p.message?.let { Text(it) }
-        OutlinedButton(onClick = CoreController::closePairing, modifier = Modifier.fillMaxWidth()) {
-            Text("취소")
-        }
-        return
-    }
     when (p.phase) {
         PairPhase.WAITING, PairPhase.CONNECTING -> {
-            Text("새 기기의 clip-ferry에서 'QR로 참여'로 스캔하거나 아래 코드를 입력하세요.")
-            p.qr?.let { qr ->
-                Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
-                    QrImage(qr, modifier = Modifier.fillMaxWidth().widthIn(max = 360.dp))
-                }
-            }
-            p.textCode?.let { code ->
-                Card(modifier = Modifier.fillMaxWidth()) {
-                    Text(
-                        code,
-                        modifier = Modifier.padding(16.dp),
-                        fontFamily = FontFamily.Monospace,
-                        style = MaterialTheme.typography.bodyLarge,
-                    )
-                }
-            }
-            p.expiresAtMs?.let { Countdown(it) }
+            Text("'${p.peerName}' 기기에 연결하는 중입니다.", style = MaterialTheme.typography.titleMedium)
+            p.message?.let { Text(it) }
             OutlinedButton(onClick = CoreController::closePairing, modifier = Modifier.fillMaxWidth()) {
                 Text("취소")
             }
@@ -290,12 +228,7 @@ private fun InviteContent(p: PairUi) {
                 Text("닫기")
             }
         }
-        PairPhase.FAILED -> Failed(p.message, onRetry = if (p.textCode == null) null else {
-            {
-                CoreController.closePairing()
-                CoreController.startInvite()
-            }
-        })
+        PairPhase.FAILED -> Failed(p.message)
     }
 }
 
@@ -305,12 +238,6 @@ private fun JoinContent(p: PairUi) {
     when (p.phase) {
         PairPhase.CONNECTING -> {
             Text(p.message ?: "릴레이에 연결하는 중입니다")
-            if (p.message?.contains("같은 계정") != true) {
-                Text(
-                    "초대한 기기의 '기기 추가' 화면이 열려 있어야 합니다.",
-                    style = MaterialTheme.typography.bodySmall,
-                )
-            }
             OutlinedButton(onClick = CoreController::closePairing, modifier = Modifier.fillMaxWidth()) {
                 Text("취소")
             }
@@ -326,21 +253,16 @@ private fun JoinContent(p: PairUi) {
         }
         // 참여가 끝나면 컨트롤러가 이 화면을 바로 닫는다.
         PairPhase.DONE -> Text("참여했습니다.")
-        PairPhase.FAILED -> Failed(p.message, onRetry = null)
+        PairPhase.FAILED -> Failed(p.message)
     }
 }
 
 @Composable
-private fun Failed(message: String?, onRetry: (() -> Unit)?) {
-    Text("페어링하지 못했습니다", style = MaterialTheme.typography.titleMedium)
+private fun Failed(message: String?) {
+    Text("연결하지 못했습니다", style = MaterialTheme.typography.titleMedium)
     message?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-        OutlinedButton(onClick = CoreController::closePairing, modifier = Modifier.weight(1f)) {
-            Text("닫기")
-        }
-        if (onRetry != null) {
-            Button(onClick = onRetry, modifier = Modifier.weight(1f)) { Text("새 초대") }
-        }
+    OutlinedButton(onClick = CoreController::closePairing, modifier = Modifier.fillMaxWidth()) {
+        Text("닫기")
     }
 }
 
@@ -357,47 +279,11 @@ private fun Sas(sas: String?) {
     )
 }
 
-@Composable
-private fun Countdown(expiresAtMs: Long) {
-    var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
-    LaunchedEffect(expiresAtMs) {
-        while (now < expiresAtMs) {
-            delay(1_000)
-            now = System.currentTimeMillis()
-        }
-    }
-    val left = ((expiresAtMs - now) / 1000).coerceAtLeast(0)
-    Text(
-        "남은 시간 ${left / 60}:${"%02d".format(left % 60)}",
-        style = MaterialTheme.typography.bodySmall,
-    )
-}
-
-/** QR 칸을 흰 바탕(여백 4칸)에 그린다. 어두운 테마에서도 스캔되게 바탕은 항상 흰색이다. */
-@Composable
-fun QrImage(qr: QrMatrix, modifier: Modifier = Modifier) {
-    val width = qr.width.toInt()
-    val quiet = 4
-    Canvas(modifier = modifier.aspectRatio(1f).background(Color.White)) {
-        val cell = size.width / (width + quiet * 2)
-        for (i in 0 until width * width) {
-            if (qr.dark[i]) {
-                drawRect(
-                    color = Color.Black,
-                    topLeft = Offset((i % width + quiet) * cell, (i / width + quiet) * cell),
-                    // 칸 사이 틈이 생기지 않게 조금 겹친다.
-                    size = Size(cell + 0.5f, cell + 0.5f),
-                )
-            }
-        }
-    }
-}
-
 // ------------------------------------------------------------ 기기 목록 (읽기 전용)
 
 /** 그룹 기기 목록. 제거·이름 변경은 데스크톱에서 한다. */
 @Composable
-fun DevicesCard(devices: List<DeviceEntry>, canInvite: Boolean, onInvite: () -> Unit) {
+fun DevicesCard(devices: List<DeviceEntry>) {
     Card(modifier = Modifier.fillMaxWidth()) {
         Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text("기기 ${devices.size}대", style = MaterialTheme.typography.titleMedium)
@@ -421,10 +307,10 @@ fun DevicesCard(devices: List<DeviceEntry>, canInvite: Boolean, onInvite: () -> 
                 }
             }
             Text(
-                "기기 제거와 이름 변경은 데스크톱 앱에서 합니다.",
+                "기기를 더하려면 새 기기에서 같은 계정으로 로그인하고 '이 계정의 다른 기기로 연결'을 " +
+                    "누르세요. 기기 제거와 이름 변경은 데스크톱 앱에서 합니다.",
                 style = MaterialTheme.typography.bodySmall,
             )
-            Button(onClick = onInvite, enabled = canInvite) { Text("기기 추가") }
         }
     }
 }
