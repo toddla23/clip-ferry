@@ -1,6 +1,6 @@
 #!/bin/sh
 # 계정 DB 백업 (F40). 공개 서버에서 매일 cron으로 돌린다.
-#   0 3 * * * /home/cf/clip-ferry/deploy/backup.sh >> /var/backups/clip-ferry/backup.log 2>&1
+#   0 3 * * * /home/<사용자>/clip-ferry/deploy/backup.sh >> /var/backups/clip-ferry/backup.log 2>&1
 # 덤프는 /var/backups/clip-ferry/account-<UTC 날짜>.sql.gz, 14일 지난 것은 지운다.
 # 계정 이메일 등 개인정보가 들어 있으므로 폴더 700·파일 600으로 둔다.
 set -eu
