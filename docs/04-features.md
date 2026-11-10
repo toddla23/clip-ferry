@@ -552,12 +552,12 @@ CLI 명령 예시는 `cf` = `cargo run -q -p clip-ferry-cli --` 의 줄임이다
 
 - **범위**
   - Azure for Students VM 한 대(Japan East, Ubuntu LTS, 크레딧으로 내는 가장 작은 크기 — 허용 지역 어디서도 학생 무료 크기 불가). 메모리 1GB라 스왑 2GB
-  - 네트워크 보안 그룹은 80·443·8443만 연다. SSH(22)는 인터넷에 열지 않고 VM을 tailnet에 넣어 Tailscale로만 접속한다. MariaDB 포트는 어디에도 열지 않는다
+  - 네트워크 보안 그룹은 80·443·8443만 연다. SSH(22)는 집 공인 IP에서만, 키로만 받는다(VM에 Tailscale은 쓰지 않는다). MariaDB 포트는 어디에도 열지 않는다
   - Azure 무료 DNS 이름 `<이름>.japaneast.cloudapp.azure.com`(고정 공인 IP)
   - `deploy/compose.cloud.yml`(새 파일): Caddy가 TLS를 종단(Let's Encrypt 자동 갱신). 주소는 Pi와 같은 모양으로 둔다: 릴레이 `wss://<이름>`(443), 계정 서버 `https://<이름>:8443`. Caddy는 계정 서버의 `/internal/*`을 밖에 열지 않는다(릴레이는 Docker 네트워크로 직접 닿는다). 릴레이는 `CF_TRUST_PROXY=true`로 Caddy의 `X-Forwarded-For`를 쓰고 포트를 호스트에 열지 않는다. 접속 토큰 확인은 처음부터 켠다(F33)
   - 이미지: GitHub Actions가 릴레이·계정 서버 이미지를 빌드해 GHCR(`ghcr.io/toddla23/clip-ferry-relay`·`-account`)에 올린다(main 푸시·`v*` 태그, VM의 CPU에 맞춰 amd64, 필요하면 arm64도). VM은 받기만 한다(`docker compose pull`)
   - DB 이전: Pi MariaDB 덤프 → VM 복원, 접속 토큰 서명 키도 옮긴다(계정 ID가 유지되어 F37 계정 채널이 그대로다)
-  - 백업: VM에서 매일 `mariadb-dump` → gzip → 14일 보관, Pi가 Tailscale로 매일 가져간다(서버 밖 사본). 복원 절차를 문서에 두고 한 번 실제로 복원해 본다
+  - 백업: VM에서 매일 `mariadb-dump` → gzip → 14일 보관, 집의 Pi가 SSH(`scp`)로 매일 가져간다(서버 밖 사본, SSH 규칙의 집 IP). 복원 절차를 문서에 두고 한 번 실제로 복원해 본다
   - 구글 콘솔: 웹 클라이언트의 승인된 JavaScript 원본에 `https://<이름>:8443`(운영자 페이지). 동의 화면은 "테스트" 그대로
   - 앱: 코드 변경 없음. 기존 기기는 로그아웃 → 계정 서버·릴레이 주소 변경 → 다시 로그인(그룹·페어링 유지)
   - 문서: `deploy/README.md`에 Azure 절, `docs/07-release.md`의 "설치한 뒤" 주소 안내
