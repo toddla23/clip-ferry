@@ -1,0 +1,19 @@
+# 공개 서버 앞단 (F40, D-025). Let's Encrypt 인증서를 자동으로 받고 갱신한다(80 포트로 확인).
+# 접속 기록(access log)은 남기지 않는다(log 지시어 없음). 개인정보처리방침의 "IP를 로그에 남기지 않음"과 맞춘다.
+{
+	email {$CF_ACME_EMAIL}
+}
+
+# 릴레이: wss://<이름>  (WebSocket은 reverse_proxy가 그대로 넘긴다)
+# Caddy는 X-Forwarded-For에 접속한 IP를 붙이고, 릴레이는 사설 주소(이 컨테이너)에서 온 연결의 값만 믿는다.
+{$CF_DOMAIN} {
+	reverse_proxy relay:8787
+}
+
+# 계정 서버: https://<이름>:8443
+{$CF_DOMAIN}:8443 {
+	# 릴레이 → 계정 서버 사용량 보고는 Docker 네트워크 안에서만 오간다. 밖에서는 열지 않는다.
+	@internal path /internal /internal/*
+	respond @internal 404
+	reverse_proxy account:8788
+}

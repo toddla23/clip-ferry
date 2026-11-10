@@ -1,0 +1,83 @@
+# 공개 서버 한 대 구성 (F40 1단계, D-025): Caddy(TLS) + 릴레이 + 계정 서버 + MariaDB.
+# 이미지는 GitHub Actions(images.yml)가 GHCR에 올린 것을 받는다. 서버에서 빌드하지 않는다.
+#   실행: docker compose --env-file deploy/.env.cloud -f deploy/compose.cloud.yml up -d
+#   업데이트: 같은 명령 앞에 `... pull &&`
+# 값은 deploy/.env.cloud 에 둔다 (git에 넣지 않는다). 예시: deploy/env.cloud.example
+#
+# 밖으로 열리는 포트는 Caddy의 80·443·8443뿐이다. 릴레이·계정 서버·MariaDB는 호스트에 포트를 열지 않는다.
+name: clip-ferry
+
+x-hardening: &hardening
+  restart: unless-stopped
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
+
+services:
+  caddy:
+    image: caddy:2.8
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "8443:8443"
+    environment:
+      CF_DOMAIN: "${CF_DOMAIN:?deploy/.env.cloud에 CF_DOMAIN이 필요합니다}"
+      CF_ACME_EMAIL: "${CF_ACME_EMAIL:?deploy/.env.cloud에 CF_ACME_EMAIL이 필요합니다}"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      # 인증서. 지우면 다시 발급받는다(발급 횟수 제한이 있으니 지우지 않는다)
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on: [relay, account]
+
+  relay:
+    <<: *hardening
+    image: "ghcr.io/toddla23/clip-ferry-relay:${CF_IMAGE_TAG:-main}"
+    environment:
+      CF_RELAY_TRUST_PROXY: "true"
+      CF_RELAY_ACCOUNT_URL: "http://account:8788"
+      CF_RELAY_USAGE_SECRET: "${CF_USAGE_SECRET:?deploy/.env.cloud에 CF_USAGE_SECRET이 필요합니다}"
+    depends_on: [account]
+
+  account:
+    <<: *hardening
+    image: "ghcr.io/toddla23/clip-ferry-account:${CF_IMAGE_TAG:-main}"
+    depends_on:
+      mariadb:
+        condition: service_healthy
+    environment:
+      CF_ACCOUNT_DATABASE_URL: "mysql://clipferry:${CF_DB_PASSWORD}@mariadb:3306/clipferry"
+      CF_ACCOUNT_SIGNING_KEY: "${CF_ACCOUNT_SIGNING_KEY:?deploy/.env.cloud에 CF_ACCOUNT_SIGNING_KEY가 필요합니다}"
+      CF_ACCOUNT_GOOGLE_CLIENT_IDS: "${CF_GOOGLE_CLIENT_IDS:-}"
+      CF_ACCOUNT_GOOGLE_WEB_CLIENT_ID: "${CF_GOOGLE_WEB_CLIENT_ID:-}"
+      CF_ACCOUNT_GOOGLE_DESKTOP_CLIENT_ID: "${CF_GOOGLE_DESKTOP_CLIENT_ID:-}"
+      CF_ACCOUNT_GOOGLE_DESKTOP_CLIENT_SECRET: "${CF_GOOGLE_DESKTOP_CLIENT_SECRET:-}"
+      CF_ACCOUNT_USAGE_SECRET: "${CF_USAGE_SECRET}"
+      CF_ACCOUNT_ADMIN_EMAILS: "${CF_ADMIN_EMAILS:-}"
+      # 공개 서버에서는 개발용 기능을 켜지 않는다
+      CF_ACCOUNT_DEV_PAGES: "false"
+      CF_ACCOUNT_DEV_LOGIN: "false"
+
+  mariadb:
+    image: mariadb:11.4
+    restart: unless-stopped
+    environment:
+      MARIADB_DATABASE: clipferry
+      MARIADB_USER: clipferry
+      MARIADB_PASSWORD: "${CF_DB_PASSWORD:?deploy/.env.cloud에 CF_DB_PASSWORD가 필요합니다}"
+      MARIADB_RANDOM_ROOT_PASSWORD: "1"
+    # 메모리 1GiB 서버라 버퍼를 작게 둔다(데이터가 작다)
+    command: ["--innodb-buffer-pool-size=64M", "--performance-schema=OFF"]
+    # 데이터는 호스트 폴더에 둔다. 컨테이너를 지우거나 `down -v`를 해도 남는다.
+    volumes:
+      - "${CF_DB_DIR:-/var/lib/clip-ferry/mariadb}:/var/lib/mysql"
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+
+volumes:
+  caddy_data:
+  caddy_config:
