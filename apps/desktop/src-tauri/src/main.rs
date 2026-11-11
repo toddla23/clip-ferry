@@ -29,7 +29,7 @@ const RESET_PROMPT: &str = "clip-ferry가 이 컴퓨터에 저장한 정보의 �
 fn ask_reset_local(detail: &str) -> bool {
     use windows::core::PCWSTR;
     use windows::Win32::UI::WindowsAndMessaging::{
-        MessageBoxW, IDYES, MB_ICONWARNING, MB_SETFOREGROUND, MB_YESNO,
+        MessageBoxW, IDYES, MB_ICONWARNING, MB_SETFOREGROUND, MB_TOPMOST, MB_YESNO,
     };
     let wide = |s: &str| s.encode_utf16().chain(Some(0)).collect::<Vec<u16>>();
     let text = wide(&format!(
@@ -44,7 +44,7 @@ fn ask_reset_local(detail: &str) -> bool {
             None,
             PCWSTR(text.as_ptr()),
             PCWSTR(title.as_ptr()),
-            MB_YESNO | MB_ICONWARNING | MB_SETFOREGROUND,
+            MB_YESNO | MB_ICONWARNING | MB_SETFOREGROUND | MB_TOPMOST,
         )
     };
     answer == IDYES
@@ -236,8 +236,17 @@ fn main() {
                 Ok(shell) => shell,
                 // 앱 데이터만 지워졌거나 손상됨: 되살릴 수 없다. 창 없이 꺼지지 않고 물어본다 (F44)
                 Err(e @ (Error::StateInconsistent | Error::StateCorrupt)) => {
+                    // 창은 setup 전에 이미 만들어져 있다. 묻는 동안 setup이 막혀 빈(검은) 창이
+                    // 경고 창을 가리므로 먼저 숨기고, 답을 받은 뒤 다시 보인다.
+                    let main = app.get_webview_window("main");
+                    if let Some(w) = &main {
+                        let _ = w.hide();
+                    }
                     if !ask_reset_local(&e.to_string()) {
                         std::process::exit(1);
+                    }
+                    if let Some(w) = &main {
+                        let _ = w.show();
                     }
                     ClipFerry::reset_local(
                         &Config {
