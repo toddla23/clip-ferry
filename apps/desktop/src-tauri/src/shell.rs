@@ -465,6 +465,19 @@ impl Shell {
         self.set_paused(!paused);
     }
 
+    /// 처음 실행할 때 한 번만 자동 시작을 켠다 (백그라운드 실행이 기본값). 사용자가 끄면 다시 켜지 않는다.
+    /// 켰다는 표시는 앱 데이터 폴더의 파일이라, 그 폴더가 지워지면 처음 실행으로 보고 다시 켠다.
+    pub fn enable_autostart_once(&self) {
+        let marker = self.data_dir.join("autostart-default-applied");
+        if marker.exists() {
+            return;
+        }
+        if self.set_autostart(true).is_ok() {
+            let _ = std::fs::create_dir_all(&self.data_dir);
+            let _ = std::fs::write(&marker, b"");
+        }
+    }
+
     /// 로그인할 때 자동으로 시작할지 정한다.
     pub fn set_autostart(&self, on: bool) -> Result<AppView, String> {
         let launch = self.handle.autolaunch();

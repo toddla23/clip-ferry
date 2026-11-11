@@ -19,6 +19,9 @@ use clip_ferry_core::api::{ClipFerry, Config, Error};
 use shell::Shell;
 use view::AppView;
 
+/// 로그인할 때 자동 시작으로 켜졌다는 표시. 이때는 창을 띄우지 않는다.
+const AUTOSTART_ARG: &str = "--autostart";
+
 const RESET_PROMPT: &str = "clip-ferry가 이 컴퓨터에 저장한 정보의 일부가 없거나 손상되어 열 수 없습니다. (앱 데이터 폴더가 지워졌을 수 있습니다.)
 
 [예]: 이 컴퓨터의 그룹 정보를 지우고 처음부터 시작합니다. 시작 화면에서 '이 계정의 다른 기기로 연결'을 누르면 다시 들어옵니다.
@@ -179,7 +182,7 @@ fn main() {
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
-            None,
+            Some(vec![AUTOSTART_ARG]),
         ))
         .invoke_handler(tauri::generate_handler![
             get_view,
@@ -259,6 +262,22 @@ fn main() {
                 Err(e) => return Err(e.into()),
             };
             app.manage(shell.clone());
+
+            // 배포 빌드는 처음 실행할 때 로그인 시 자동 시작을 켠다 (디버그·개발용 프로필은 개발 중인
+            // 실행 파일을 등록하지 않도록 건드리지 않는다).
+            if !cfg!(debug_assertions) && settings::dev_profile().is_none() {
+                shell.enable_autostart_once();
+            }
+            // 자동 시작으로 켜졌고 바로 쓸 수 있는 상태면 창 없이 트레이에만 둔다.
+            // 로그인이나 그룹이 아직 없으면 할 일이 있으므로 창을 보인다.
+            if std::env::args().any(|a| a == AUTOSTART_ARG) {
+                let view = shell.view();
+                if view.account.is_some() && view.stage == view::Stage::Ready {
+                    if let Some(w) = app.get_webview_window("main") {
+                        let _ = w.hide();
+                    }
+                }
+            }
 
             tauri::async_runtime::spawn(async move {
                 shell.begin();
