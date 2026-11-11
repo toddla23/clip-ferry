@@ -206,6 +206,39 @@ fn missing_pieces_are_reported_as_inconsistent() {
     ));
 }
 
+/// F44: 되살릴 수 없는 로컬 상태를 지우면 처음 상태로 열린다.
+#[test]
+fn reset_local_recovers_from_inconsistent_state() {
+    let cfg = |dir: &std::path::Path| Config {
+        data_dir: dir.to_path_buf(),
+    };
+    // 상태 파일만 사라지고 키가 남음 (데스크톱에서 앱 데이터만 지워진 경우)
+    let (dir, secrets) = prepared();
+    std::fs::remove_file(dir.path().join("state.bin")).unwrap();
+    assert!(matches!(
+        open(dir.path(), &secrets),
+        Err(Error::StateInconsistent)
+    ));
+    ClipFerry::reset_local(&cfg(dir.path()), &secrets).unwrap();
+    let app = open(dir.path(), &secrets).unwrap();
+    assert!(!app.is_initialized());
+    assert!(secrets.get(KEY_DEVICE).is_none() && secrets.get(KEY_STATE).is_none());
+
+    // 상태를 읽을 수 있으면 그룹 키까지 지운다
+    let (dir, secrets) = prepared();
+    assert!(secrets.get(&group_key_name(1)).is_some());
+    ClipFerry::reset_local(&cfg(dir.path()), &secrets).unwrap();
+    assert!(secrets.get(&group_key_name(1)).is_none());
+    assert!(!dir.path().join("state.bin").exists());
+    assert!(!open(dir.path(), &secrets).unwrap().is_initialized());
+
+    // 상태 파일만 남음 → 지우면 열린다
+    let (dir, _secrets) = prepared();
+    let empty = MemorySecretStore::default();
+    ClipFerry::reset_local(&cfg(dir.path()), &empty).unwrap();
+    assert!(!open(dir.path(), &empty).unwrap().is_initialized());
+}
+
 #[test]
 fn status_debug_has_no_secrets() {
     let (dir, secrets) = prepared();

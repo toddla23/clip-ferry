@@ -9,16 +9,9 @@ export interface DeviceView {
   online: boolean;
 }
 
-export interface Qr {
-  width: number;
-  path: string;
-}
-
 export interface PairingView {
   kind: "invite" | "join";
   phase: "connecting" | "waiting" | "request" | "done" | "failed";
-  textCode: string | null;
-  qr: Qr | null;
   expiresAtMs: number | null;
   peerName: string | null;
   sas: string | null;
@@ -51,6 +44,8 @@ export interface AppView {
   /** 서버 주소 칸을 보인다 (디버그 빌드이거나 제목을 7번 눌렀을 때, F43). 아니면 주소가 빈 문자열로 온다 */
   showServerSettings: boolean;
   linkRequest: LinkRequestView | null;
+  /** 이 계정에 그룹에 있는 다른 기기가 있는가 (F44). 모르면 null. 있으면 `새 그룹 만들기`를 숨긴다 */
+  accountHasGroup: boolean | null;
 }
 
 export interface LinkRequestView {

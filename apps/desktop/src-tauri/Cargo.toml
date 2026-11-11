@@ -14,7 +14,6 @@ clip-ferry-core = { path = "../../../core" }
 tauri = { version = "2", features = ["tray-icon"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-qrcode = { version = "0.14", default-features = false }
 # 플랫폼 보안 저장소: Windows Credential Manager / macOS Keychain / Linux keyutils
 keyring = { version = "3", features = ["windows-native", "apple-native", "linux-native"] }
 
@@ -39,6 +38,8 @@ windows = { version = "0.62", features = [
     "Win32_Foundation",
     "Win32_System_DataExchange",
     "Win32_System_Memory",
+    # 시작할 때 로컬 상태를 못 열면 묻는 창 (F44)
+    "Win32_UI_WindowsAndMessaging",
 ] }
 
 [target.'cfg(target_os = "macos")'.dependencies]

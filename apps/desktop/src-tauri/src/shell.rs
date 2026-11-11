@@ -17,7 +17,7 @@ use clip_ferry_core::transport::{TokenSource, TransportConfig};
 use tauri::{AppHandle, Emitter};
 use tauri_plugin_autostart::ManagerExt;
 
-use crate::account::{self, Account, TokenError};
+use crate::account::{self, Account, Registered, TokenError};
 use crate::clipsync::{ClipSync, Content};
 use crate::imgcodec;
 use crate::settings::{self, Settings};
@@ -37,8 +37,6 @@ struct Pairing {
     id: u64,
     view: PairingView,
     flow: Option<Flow>,
-    /// 계정 연결(F37)로 진행 중
-    via_account: bool,
 }
 
 struct Inner {
@@ -70,6 +68,8 @@ struct Inner {
     account_link: Option<AccountLink>,
     /// 같은 계정의 새 기기가 보낸 참여 요청 (사용자가 연결·무시를 고르기 전)
     link_request: Option<LinkRequestInfo>,
+    /// 이 계정에 그룹에 있는 다른 기기가 있는가 (F44). 모르면 `None`
+    account_has_group: Option<bool>,
 }
 
 pub struct Shell {
@@ -235,6 +235,7 @@ impl Shell {
                 next_pairing_id: 1,
                 account_link: None,
                 link_request: None,
+                account_has_group: None,
             }),
         }))
     }
@@ -251,7 +252,10 @@ impl Shell {
         self.register_device();
         match self.app.status() {
             Ok(s) if s.epoch.is_some() => self.start(),
-            _ => self.publish(),
+            _ => {
+                self.refresh_account_group();
+                self.publish()
+            }
         }
     }
 
@@ -461,6 +465,19 @@ impl Shell {
         self.set_paused(!paused);
     }
 
+    /// 처음 실행할 때 한 번만 자동 시작을 켠다 (백그라운드 실행이 기본값). 사용자가 끄면 다시 켜지 않는다.
+    /// 켰다는 표시는 앱 데이터 폴더의 파일이라, 그 폴더가 지워지면 처음 실행으로 보고 다시 켠다.
+    pub fn enable_autostart_once(&self) {
+        let marker = self.data_dir.join("autostart-default-applied");
+        if marker.exists() {
+            return;
+        }
+        if self.set_autostart(true).is_ok() {
+            let _ = std::fs::create_dir_all(&self.data_dir);
+            let _ = std::fs::write(&marker, b"");
+        }
+    }
+
     /// 로그인할 때 자동으로 시작할지 정한다.
     pub fn set_autostart(&self, on: bool) -> Result<AppView, String> {
         let launch = self.handle.autolaunch();
@@ -634,6 +651,7 @@ impl Shell {
                 self.start();
                 return;
             }
+            self.refresh_account_group();
         }
         self.publish();
     }
@@ -655,6 +673,7 @@ impl Shell {
             inner.login_message = message;
             inner.account_link = None;
             inner.link_request = None;
+            inner.account_has_group = None;
             (inner.session.take(), inner.pairing.take())
         };
         // 잠금을 놓은 뒤에 멈춘다.
@@ -663,21 +682,76 @@ impl Shell {
         self.publish();
     }
 
-    /// 이 기기를 계정의 기기 목록에 올린다(이름·플랫폼). 실패해도 동작에는 상관없다.
-    fn register_device(&self) {
+    /// 이 기기의 전체 ID (계정 서버의 기기 목록에 쓰는 32자리 hex). 기기가 아직 없으면 `None`.
+    fn device_hex(&self) -> Option<String> {
+        let status = self.app.status().ok()?;
+        Some(
+            status
+                .device_id
+                .0
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect(),
+        )
+    }
+
+    /// 이 기기를 계정의 기기 목록에 올린다(이름·플랫폼·그룹에 있는지, F44). 계정 서버에 닿지 않아도
+    /// 동작에는 상관없다. 다른 기기에서 처음부터 다시 시작했으면 예전 그룹을 떠난다.
+    fn register_device(self: &Arc<Self>) {
         let Ok(status) = self.app.status() else {
             return;
         };
-        let id: String = status
-            .device_id
-            .0
-            .iter()
-            .map(|b| format!("{b:02x}"))
-            .collect();
-        let name = status.device_name;
+        let Some(id) = self.device_hex() else {
+            return;
+        };
+        let (name, in_group) = (status.device_name, status.epoch.is_some());
+        let weak = Arc::downgrade(self);
+        tauri::async_runtime::spawn(async move {
+            let Some(shell) = weak.upgrade() else { return };
+            if let Ok(Registered::Retired) =
+                shell.account.register_device(&id, &name, in_group).await
+            {
+                shell.retired();
+            }
+        });
+    }
+
+    /// 다른 기기에서 처음부터 다시 시작했다 (F44): 예전 그룹을 떠나 첫 실행 화면으로 간다.
+    fn retired(self: &Arc<Self>) {
+        let (session, pairing) = {
+            let mut inner = self.inner.lock().unwrap();
+            inner.online.clear();
+            inner.connection = Connection::Stopped;
+            inner.link_request = None;
+            inner.account_has_group = None;
+            inner.error = Some(RETIRED_MESSAGE.into());
+            (inner.session.take(), inner.pairing.take())
+        };
+        drop(session);
+        drop(pairing);
+        let _ = self.app.leave_group();
+        self.notify(RETIRED_MESSAGE);
+        self.register_device();
+        self.refresh_account_group();
+        self.publish();
+    }
+
+    /// 이 계정에 그룹에 있는 다른 기기가 있는지 계정 서버에 묻는다 (F44). 마법사에서만 쓴다.
+    fn refresh_account_group(self: &Arc<Self>) {
+        if !self.account.is_signed_in() || self.app.connection().is_some() {
+            return;
+        }
+        let own = self.device_hex().unwrap_or_default();
+        let weak = Arc::downgrade(self);
         let account = self.account.clone();
         tauri::async_runtime::spawn(async move {
-            let _ = account.register_device(&id, &name).await;
+            let Ok(has) = account.account_has_group(&own).await else {
+                return;
+            };
+            if let Some(shell) = weak.upgrade() {
+                shell.inner.lock().unwrap().account_has_group = Some(has);
+                shell.publish();
+            }
         });
     }
 
@@ -693,7 +767,7 @@ impl Shell {
     }
 
     /// 이 기기의 이름을 바꾸고 그룹에 알린다.
-    pub async fn rename_device(&self, name: &str) -> Result<AppView, String> {
+    pub async fn rename_device(self: &Arc<Self>, name: &str) -> Result<AppView, String> {
         let name = name.trim();
         if name.is_empty() || name.len() > 64 {
             return Err("이름은 1~64바이트여야 합니다".into());
@@ -722,7 +796,7 @@ impl Shell {
     }
 
     /// 제거되었거나 오래 연결되지 않은 기기가 그룹에서 나가 처음 화면으로 돌아간다(다시 페어링하려고).
-    pub fn leave_group(&self) -> Result<AppView, String> {
+    pub fn leave_group(self: &Arc<Self>) -> Result<AppView, String> {
         {
             let mut inner = self.inner.lock().unwrap();
             inner.session = None;
@@ -730,8 +804,11 @@ impl Shell {
             inner.online.clear();
             inner.connection = Connection::Stopped;
             inner.error = None;
+            inner.account_has_group = None;
         }
         self.app.leave_group().map_err(|e| e.to_string())?;
+        self.register_device();
+        self.refresh_account_group();
         self.publish();
         Ok(self.view())
     }
@@ -739,7 +816,7 @@ impl Shell {
     // ------------------------------------------------------------ 첫 실행
 
     /// 기기가 아직 없으면 이름을 정해 만든다. 이미 있으면 그대로 둔다. 로그인해야 한다.
-    fn ensure_device(&self, name: &str) -> Result<(), String> {
+    fn ensure_device(self: &Arc<Self>, name: &str) -> Result<(), String> {
         self.require_sign_in()?;
         if !self.app.is_initialized() {
             self.app
@@ -750,9 +827,27 @@ impl Shell {
         Ok(())
     }
 
-    /// 새 그룹을 만들고 릴레이에 연결한다.
+    /// 새 그룹을 만들고 릴레이에 연결한다. 이 계정에 이미 그룹이 있으면 만들지 않는다 (F44, D-027).
     pub fn create_group(self: &Arc<Self>, name: &str) -> Result<AppView, String> {
+        let has_group = self.inner.lock().unwrap().account_has_group;
+        match has_group {
+            Some(false) => {}
+            Some(true) => {
+                return Err(
+                    "이 계정에는 이미 그룹이 있습니다. '이 계정의 다른 기기로 연결'을 누르세요"
+                        .into(),
+                )
+            }
+            None => {
+                self.refresh_account_group();
+                return Err("서버에 연결하지 못했습니다. 잠시 뒤 다시 시도하세요".into());
+            }
+        }
         self.ensure_device(name)?;
+        self.new_group()
+    }
+
+    fn new_group(self: &Arc<Self>) -> Result<AppView, String> {
         if self
             .app
             .status()
@@ -762,8 +857,26 @@ impl Shell {
         {
             self.app.create_group().map_err(|e| e.to_string())?;
         }
+        self.register_device();
         self.start();
         Ok(self.view())
+    }
+
+    /// 처음부터 다시 시작 (F44, D-027): 승인해 줄 기기가 없을 때. 이 계정의 다른 기기는 예전 그룹을
+    /// 떠나게 하고(다음에 켜질 때), 이 기기에서 새 그룹을 만든다.
+    pub async fn restart_group(self: &Arc<Self>, name: &str) -> Result<AppView, String> {
+        self.ensure_device(name)?;
+        let id = self
+            .device_hex()
+            .ok_or_else(|| "기기를 만들지 못했습니다".to_string())?;
+        self.account.restart_group(&id).await.map_err(|e| match e {
+            TokenError::SignedOut => "로그인이 만료되었습니다. 다시 로그인하세요".to_string(),
+            TokenError::Unavailable => {
+                "서버에 연결하지 못했습니다. 잠시 뒤 다시 시도하세요".to_string()
+            }
+        })?;
+        self.inner.lock().unwrap().account_has_group = Some(false);
+        self.new_group()
     }
 
     // ------------------------------------------------------------ 페어링
@@ -787,67 +900,11 @@ impl Shell {
         }
     }
 
-    /// 초대 코드로 다른 그룹에 참여한다.
-    pub fn start_join(self: &Arc<Self>, name: &str, code: &str) -> Result<AppView, String> {
-        self.ensure_device(name)?;
-        let id = self.new_pairing_id();
-        let relay = self.inner.lock().unwrap().relay_url.clone();
-        // 콜백이 먼저 와도 받을 수 있게 진행 상태를 먼저 만들어 둔다.
-        let old = self.inner.lock().unwrap().pairing.replace(Pairing {
-            id,
-            view: PairingView::new(PairKind::Join, PairPhase::Connecting),
-            flow: None,
-            via_account: false,
-        });
-        drop(old);
-
-        let weak = Arc::downgrade(self);
-        let flow = pair_flow::start_join(
-            &self.app,
-            code,
-            None,
-            &relay,
-            self.transport_config(),
-            move |update| {
-                if let Some(shell) = weak.upgrade() {
-                    shell.on_join_update(id, update);
-                }
-            },
-        );
-        match flow {
-            Ok(flow) => {
-                if let Some(p) = self.inner.lock().unwrap().pairing.as_mut() {
-                    if p.id == id {
-                        p.flow = Some(Flow::Join(flow));
-                    }
-                }
-                self.publish();
-                Ok(self.view())
-            }
-            Err(e) => {
-                self.take_pairing(id);
-                self.publish();
-                Err(e.to_string())
-            }
-        }
-    }
-
     fn on_join_update(self: &Arc<Self>, id: u64, update: JoinUpdate) {
         match update {
             JoinUpdate::Connected => {
-                let via_account = self
-                    .inner
-                    .lock()
-                    .unwrap()
-                    .pairing
-                    .as_ref()
-                    .is_some_and(|p| p.id == id && p.via_account);
                 self.update_pairing(id, |v| {
-                    v.message = Some(if via_account {
-                        "같은 계정의 다른 기기에서 연결을 눌러 주기를 기다리는 중입니다. 그 기기에서 clip-ferry가 켜져 있어야 합니다".into()
-                    } else {
-                        "초대한 기기의 응답을 기다리는 중입니다".into()
-                    });
+                    v.message = Some("같은 계정의 다른 기기에서 연결을 눌러 주기를 기다리는 중입니다. 그 기기에서 clip-ferry가 켜져 있어야 합니다".into());
                 });
             }
             JoinUpdate::WaitingApproval { inviter_name, sas } => {
@@ -861,6 +918,7 @@ impl Shell {
             JoinUpdate::Joined => {
                 // 그룹에 들어왔다. 진행 화면을 닫고 릴레이에 연결한다.
                 if self.take_pairing(id).is_some() {
+                    self.register_device();
                     self.start();
                     return;
                 }
@@ -873,38 +931,6 @@ impl Shell {
             }
         }
         self.publish();
-    }
-
-    /// 다른 기기를 내 그룹에 초대한다.
-    pub fn start_invite(self: &Arc<Self>) -> Result<AppView, String> {
-        self.require_sign_in()?;
-        if self.app.connection().is_none() {
-            return Err("먼저 그룹이 있어야 합니다".into());
-        }
-        let id = self.new_pairing_id();
-        let relay = self.inner.lock().unwrap().relay_url.clone();
-        let weak = Arc::downgrade(self);
-        let flow =
-            pair_flow::start_invite(&self.app, &relay, self.transport_config(), move |update| {
-                if let Some(shell) = weak.upgrade() {
-                    shell.on_invite_update(id, update);
-                }
-            })
-            .map_err(|e| e.to_string())?;
-
-        let mut pv = PairingView::new(PairKind::Invite, PairPhase::Waiting);
-        pv.text_code = Some(flow.text_code.clone());
-        pv.qr = view::qr(&flow.qr_string);
-        pv.expires_at_ms = Some(flow.expires_at_ms);
-        let old = self.inner.lock().unwrap().pairing.replace(Pairing {
-            id,
-            view: pv,
-            flow: Some(Flow::Invite(flow)),
-            via_account: false,
-        });
-        drop(old);
-        self.publish();
-        Ok(self.view())
     }
 
     // ------------------------------------------------------------ 계정 연결 (F37)
@@ -994,7 +1020,6 @@ impl Shell {
             id,
             view: pv,
             flow: Some(Flow::Invite(flow)),
-            via_account: true,
         });
         drop(old);
         self.publish();
@@ -1022,7 +1047,6 @@ impl Shell {
             id,
             view: PairingView::new(PairKind::Join, PairPhase::Connecting),
             flow: None,
-            via_account: true,
         });
         drop(old);
 
@@ -1156,6 +1180,7 @@ impl Shell {
             )
         };
         let mut view = view::build(&self.app, connection, &relay_url, error);
+        view.account_has_group = self.inner.lock().unwrap().account_has_group;
         view.pairing = pairing;
         view.link_request = link_request;
         (
@@ -1199,6 +1224,8 @@ impl Shell {
         let _ = self.handle.emit("view-changed", &view);
     }
 }
+
+const RETIRED_MESSAGE: &str = "다른 기기에서 '처음부터 다시 시작'을 해서 이 기기는 예전 그룹에서 나왔습니다. '이 계정의 다른 기기로 연결'로 새 그룹에 들어오세요";
 
 /// 컴퓨터 이름을 기기 이름 후보로 쓴다 (1~64바이트).
 fn default_device_name() -> String {

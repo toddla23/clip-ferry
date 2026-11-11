@@ -481,36 +481,107 @@ impl Account {
             .ok_or_else(|| "로그인 정보를 저장하지 못했습니다".into())
     }
 
-    /// 이 기기를 계정의 기기 목록에 올린다(이름·플랫폼). `device_id`는 32자 hex.
-    pub async fn register_device(
-        &self,
-        device_id: &str,
-        name: &str,
-        platform: &str,
-    ) -> Result<(), TokenError> {
-        let token = self.token().await?;
-        let url = self
-            .data
+    fn saved_url(&self) -> Result<String, TokenError> {
+        self.data
             .lock()
             .unwrap()
             .saved
             .as_ref()
             .map(|s| s.account_url.clone())
-            .ok_or(TokenError::SignedOut)?;
+            .ok_or(TokenError::SignedOut)
+    }
+
+    /// 이 기기를 계정의 기기 목록에 올린다(이름·플랫폼·그룹에 있는지, F44). `device_id`는 32자 hex.
+    /// 다른 기기에서 처음부터 다시 시작했으면 `Ok(Registered::Retired)`.
+    pub async fn register_device(
+        &self,
+        device_id: &str,
+        name: &str,
+        platform: &str,
+        in_group: bool,
+    ) -> Result<Registered, TokenError> {
+        let token = self.token().await?;
+        let url = self.saved_url()?;
         let resp = self
             .http
             .put(format!("{url}/v1/devices/{device_id}"))
             .bearer_auth(token)
-            .json(&serde_json::json!({ "name": name, "platform": platform }))
+            .json(&serde_json::json!({ "name": name, "platform": platform, "in_group": in_group }))
             .send()
             .await
             .map_err(|_| TokenError::Unavailable)?;
         if resp.status().is_success() {
-            Ok(())
-        } else {
-            Err(TokenError::Unavailable)
+            return Ok(Registered::Ok);
         }
+        if resp.status() == reqwest::StatusCode::CONFLICT {
+            #[derive(Deserialize)]
+            struct Body {
+                error: String,
+            }
+            if resp
+                .json::<Body>()
+                .await
+                .is_ok_and(|b| b.error == "device_retired")
+            {
+                return Ok(Registered::Retired);
+            }
+        }
+        Err(TokenError::Unavailable)
     }
+
+    /// 이 계정에 그룹에 있는 다른 기기가 있는가 (F44, `GET /v1/me`).
+    pub async fn account_has_group(&self, own_device_id: &str) -> Result<bool, TokenError> {
+        #[derive(Deserialize)]
+        struct Dev {
+            device_id: String,
+            #[serde(default)]
+            in_group: bool,
+        }
+        #[derive(Deserialize)]
+        struct Me {
+            devices: Vec<Dev>,
+        }
+        let token = self.token().await?;
+        let url = self.saved_url()?;
+        let me: Me = self
+            .http
+            .get(format!("{url}/v1/me"))
+            .bearer_auth(token)
+            .send()
+            .await
+            .and_then(|r| r.error_for_status())
+            .map_err(|_| TokenError::Unavailable)?
+            .json()
+            .await
+            .map_err(|_| TokenError::Unavailable)?;
+        Ok(me
+            .devices
+            .iter()
+            .any(|d| d.in_group && d.device_id != own_device_id))
+    }
+
+    /// 처음부터 다시 시작 (F44, `POST /v1/group/restart`).
+    pub async fn restart_group(&self, device_id: &str) -> Result<(), TokenError> {
+        let token = self.token().await?;
+        let url = self.saved_url()?;
+        self.http
+            .post(format!("{url}/v1/group/restart"))
+            .bearer_auth(token)
+            .json(&serde_json::json!({ "device_id": device_id }))
+            .send()
+            .await
+            .and_then(|r| r.error_for_status())
+            .map_err(|_| TokenError::Unavailable)?;
+        Ok(())
+    }
+}
+
+/// 기기 등록 결과 (F44)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Registered {
+    Ok,
+    /// 다른 기기에서 처음부터 다시 시작했다. 이 기기는 예전 그룹을 떠나야 한다
+    Retired,
 }
 
 #[cfg(test)]

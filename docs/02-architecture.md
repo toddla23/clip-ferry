@@ -105,8 +105,8 @@ pub trait SecretStore: Send + Sync {         // 셸이 구현 (플랫폼 보안 
 
 | 셸 | 기술 | 하는 일 |
 |---|---|---|
-| 데스크톱 (`apps/desktop/`) | Tauri 2 + React + TypeScript (Vite) | 트레이 앱, 클립보드 감지/쓰기, 페어링 UI(QR 표시·코드 입력), 기기 관리, 설정. 코어를 Rust에서 직접 호출 |
-| Android (`apps/android/`) | Kotlin + Jetpack Compose | 포그라운드 서비스, 빠른 설정 타일, 알림 버튼, 공유·텍스트 선택 메뉴, QR 스캔, FCM |
+| 데스크톱 (`apps/desktop/`) | Tauri 2 + React + TypeScript (Vite) | 트레이 앱, 클립보드 감지/쓰기, 계정 연결 UI(F44부터 QR·코드 없음), 기기 관리, 설정. 코어를 Rust에서 직접 호출 |
+| Android (`apps/android/`) | Kotlin + Jetpack Compose | 포그라운드 서비스, 빠른 설정 타일, 알림 버튼, 공유·텍스트 선택 메뉴, 계정 연결(F44부터 QR 스캔 없음), FCM |
 | iOS (`apps/ios/`) | Swift + SwiftUI | 포그라운드 수신, App Intents, Share Extension, Notification Service Extension, QR 스캔, APNs |
 
 Android 빌드 메모: 필요한 것은 Android Studio(SDK 플랫폼·NDK·CMake), 환경 변수 `ANDROID_HOME`·`ANDROID_NDK_HOME`, `rustup target add aarch64-linux-android x86_64-linux-android`, `cargo install cargo-ndk --locked`. `scripts/build-android-core.ps1`(Windows) 또는 `.sh`(macOS·Linux)가 `.so`를 `apps/android/app/src/main/jniLibs/`에, Kotlin 바인딩을 `app/src/main/java/uniffi/`에 만든다(둘 다 git에 넣지 않는다). 그 뒤 Android Studio로 열거나 `apps/android`에서 `./gradlew installDebug`. 처음 받은 저장소는 코어 스크립트를 먼저 한 번 돌려야 Gradle 빌드가 된다. Android 셸의 파일은 `KeystoreVault`(Keystore 비밀 저장소), `CoreController`(코어 ↔ 화면 상태), `ClipFerryService`(포그라운드 서비스·네트워크 변경 감지), `MainActivity`(Compose 화면: 첫 실행·메인), `PairingScreens`(참여·초대·확인 숫자·기기 목록), `QrScanner`(CameraX + ML Kit 번들 모델, 기기 안에서만 인식), `ReceivedClips`(받은 텍스트·이미지를 클립보드에 쓰기. 이미지는 `cache/received/`에 최근 1개만 두고 `FileProvider` URI로 넘긴다), `SendActivity`·`SendTileService`·`SendClipboard`(타일·알림 버튼 → 보이지 않는 액티비티가 초점을 받아 클립보드를 읽고 보낸다), `ShareActivity`(공유 시트·텍스트 선택 메뉴 → 보이지 않는 액티비티. 공유받은 이미지는 `cache/outgoing/`에 복사한 뒤 `SendClipboard.sendBatch`로 한 장씩 보낸다), `ShareShortcut`(공유 시트 맨 윗줄 직접 공유 바로가기 `다른 기기로`), `GoogleLogin`(Credential Manager로 구글 ID 토큰 받기, F35).
@@ -188,7 +188,8 @@ clip-ferry/
   - 형식: `"CFST"`(4) ‖ 형식 버전(1) ‖ nonce(24) ‖ 암호문. 머리말(`"CFST"`‖버전)이 aad. 평문은 `LocalState` protobuf.
   - 비밀 저장소 키 이름: `device_keys`(서명 시드‖DH 비밀, 64B), `state_key`(32B), `group_key/<에포크>`(32B).
   - 계정 로그인(데스크톱 F34, Android F35): `account/session` — 계정 서버 주소·갱신 토큰·이메일·이름(JSON). 접속 토큰은 저장하지 않는다(메모리).
-  - 비밀 저장소와 `state.bin`이 한쪽만 남아 있으면 열기를 거부한다(조용히 새로 만들지 않는다).
+  - 비밀 저장소와 `state.bin`이 한쪽만 남아 있으면 열기를 거부한다(조용히 새로 만들지 않는다). 셸은 사용자에게 묻고, 동의하면 `ClipFerry::reset_local`로 이 기기의 상태·키를 지운 뒤 다시 연다(F44. 데스크톱 메시지 상자, Android 화면).
+  - 계정 하나당 그룹 하나(F44, D-027): 셸은 기기 등록 때 `in_group`을 알리고, 첫 실행에서 계정 서버(`GET /v1/me`의 `in_group`)로 이 계정에 그룹이 있는지 보고 `새 그룹 만들기`를 숨긴다. `409 device_retired`를 받으면 `leave_group` 후 첫 실행 화면으로 간다.
 - **클립보드 내용은 디스크에 저장하지 않는다** (로컬 내역 기능 F29 전까지).
 
 ## 민감 클립보드 제외 (F11)

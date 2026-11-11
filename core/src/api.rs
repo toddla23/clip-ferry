@@ -347,6 +347,37 @@ impl ClipFerry {
         })
     }
 
+    /// 이 기기의 로컬 상태를 모두 지운다(상태 파일, 기기 키, 상태 키, 아는 그룹 키). `open`이
+    /// `StateInconsistent`·`StateCorrupt`로 실패해 되살릴 수 없을 때 "처음부터 다시 시작"에 쓴다(F44).
+    /// 그다음 `open`은 초기화 전 상태로 열린다. 지운 뒤에는 이 기기의 그룹 정보를 되찾을 수 없다.
+    pub fn reset_local(config: &Config, secrets: &dyn SecretStore) -> Result<(), Error> {
+        let path = config.data_dir.join("state.bin");
+        // 읽을 수 있으면 그룹 키 이름(에포크)을 알아 함께 지운다. 못 읽으면 남은 그룹 키는 쓰이지 않는다.
+        if let Some(state_key) = secrets
+            .get(KEY_STATE)
+            .and_then(|k| StateKey::from_bytes(&Zeroizing::new(k)).ok())
+        {
+            if let Ok(Some(state)) = store::read_state(&path, &state_key) {
+                let epochs = state
+                    .roster
+                    .iter()
+                    .map(|r| r.epoch)
+                    .chain(state.retired.iter().map(|r| r.epoch));
+                for epoch in epochs {
+                    let _ = secrets.delete(&group_key_name(epoch));
+                }
+            }
+        }
+        match std::fs::remove_file(&path) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) => return Err(Error::Io),
+        }
+        secrets.delete(KEY_DEVICE)?;
+        secrets.delete(KEY_STATE)?;
+        Ok(())
+    }
+
     pub fn is_initialized(&self) -> bool {
         self.device.lock().unwrap().is_some()
     }

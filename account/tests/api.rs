@@ -121,6 +121,31 @@ impl Server {
         (status, r.json().await.unwrap_or(Value::Null))
     }
 
+    async fn put_device_group(&self, token: &str, id: &str, in_group: bool) -> (u16, Value) {
+        let r = self
+            .http
+            .put(format!("{}/v1/devices/{id}", self.base))
+            .bearer_auth(token)
+            .json(&json!({ "name": "기기", "platform": "android", "in_group": in_group }))
+            .send()
+            .await
+            .unwrap();
+        let status = r.status().as_u16();
+        (status, r.json().await.unwrap_or(Value::Null))
+    }
+
+    async fn post_auth(&self, path: &str, token: &str, body: Value) -> u16 {
+        self.http
+            .post(format!("{}{path}", self.base))
+            .bearer_auth(token)
+            .json(&body)
+            .send()
+            .await
+            .unwrap()
+            .status()
+            .as_u16()
+    }
+
     async fn google_login(&self, token: String) -> (u16, Value) {
         self.post("/v1/auth/google", json!({ "id_token": token }))
             .await
@@ -227,6 +252,64 @@ async fn google_login_me_and_devices() {
         assert_eq!(st, 200, "{name}");
         assert_eq!(again["user"]["id"], user_id);
         assert_eq!(again["user"]["name"], "바뀐 이름");
+    }
+}
+
+/// F44: 기기가 그룹 상태를 알리고, 처음부터 다시 시작하면 다른 기기는 예전 그룹을 떠나야 한다.
+#[tokio::test]
+async fn one_group_per_account_restart() {
+    for (name, store) in stores().await {
+        let srv = start(store, false).await;
+        let (_, body) = srv.google_login(good_token(&new_sub())).await;
+        let access = s(&body, "access_token");
+        let (pc, phone) = (
+            "00000000000000000000000000000001",
+            "00000000000000000000000000000002",
+        );
+
+        // 예전 앱(in_group 없음)은 그룹 상태를 바꾸지 않는다
+        let (st, d) = srv.put_device(&access, pc, "PC", "windows").await;
+        assert_eq!(st, 200, "{name}: {d}");
+        assert_eq!(d["in_group"], false, "{name}");
+        let (_, d) = srv.put_device_group(&access, pc, true).await;
+        assert_eq!(d["in_group"], true, "{name}");
+        let (_, d) = srv.put_device(&access, pc, "PC", "windows").await;
+        assert_eq!(d["in_group"], true, "{name}");
+
+        // 새 폰이 처음부터 다시 시작 → PC는 retired, 그룹에 있다고 다시 알리면 409
+        assert_eq!(srv.put_device_group(&access, phone, false).await.0, 200);
+        let st = srv
+            .post_auth("/v1/group/restart", &access, json!({ "device_id": phone }))
+            .await;
+        assert_eq!(st, 204, "{name}");
+        assert_eq!(srv.put_device_group(&access, phone, true).await.0, 200);
+        let (_, me) = srv.get_auth("/v1/me", Some(&access)).await;
+        let devices = me["devices"].as_array().unwrap();
+        let pc_row = devices.iter().find(|d| d["device_id"] == pc).unwrap();
+        assert_eq!(pc_row["in_group"], false, "{name}");
+        assert_eq!(pc_row["retired"], true, "{name}");
+        let (st, body) = srv.put_device_group(&access, pc, true).await;
+        assert_eq!(st, 409, "{name}");
+        assert_eq!(body["error"], "device_retired", "{name}");
+        // 이름만 갱신(예전 앱)은 된다
+        assert_eq!(srv.put_device(&access, pc, "PC", "windows").await.0, 200);
+
+        // PC가 그룹을 떠난 뒤(false) 계정 연결로 다시 들어오면(true) 된다
+        let (_, d) = srv.put_device_group(&access, pc, false).await;
+        assert_eq!(d["retired"], false, "{name}");
+        let (st, d) = srv.put_device_group(&access, pc, true).await;
+        assert_eq!(st, 200, "{name}");
+        assert_eq!(d["in_group"], true, "{name}");
+
+        // 잘못된 요청
+        let st = srv
+            .post_auth("/v1/group/restart", &access, json!({ "device_id": "x" }))
+            .await;
+        assert_eq!(st, 400, "{name}");
+        let st = srv
+            .post_auth("/v1/group/restart", "bad", json!({ "device_id": phone }))
+            .await;
+        assert_eq!(st, 401, "{name}");
     }
 }
 

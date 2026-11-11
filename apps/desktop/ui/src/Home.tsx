@@ -73,10 +73,11 @@ export default function Home({
           <h2>
             기기 {view.devices.length}대 · 에포크 {view.epoch ?? "-"}
           </h2>
-          <button data-testid="add-device" onClick={() => call("start_invite")}>
-            기기 추가
-          </button>
         </div>
+        <p className="note" data-testid="add-device-hint">
+          기기를 더하려면 새 기기에서 같은 계정으로 로그인하고 '이 계정의 다른 기기로 연결'을
+          누르세요. 이 창에 요청이 뜹니다.
+        </p>
         <Devices view={view} onView={onView} onError={setMessage} />
       </section>
 

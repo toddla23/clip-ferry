@@ -46,7 +46,14 @@ pub struct Device {
     pub platform: String,
     pub created_at_ms: i64,
     pub last_seen_ms: i64,
+    /// 그룹에 들어 있다고 알린 기기 (F44)
+    pub in_group: bool,
+    /// 다른 기기에서 "처음부터 다시 시작"해 예전 그룹을 떠나야 하는 기기 (F44)
+    pub retired: bool,
 }
+
+/// 기기 등록 때 알리는 그룹 상태 (F44). `None`이면 바꾸지 않는다(예전 앱).
+pub type InGroup = Option<bool>;
 
 /// 하루 사용량 (릴레이가 보낸 게시 수·바이트).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -122,6 +129,9 @@ pub enum StoreError {
     TooManyDevices,
     #[error("계정이 없습니다")]
     NoUser,
+    /// 다른 기기에서 처음부터 다시 시작했다. 이 기기는 그룹을 떠난 뒤(`in_group = false`) 다시 등록한다
+    #[error("이 기기는 예전 그룹에 있습니다")]
+    Retired,
     #[error("DB 오류: {0}")]
     Db(#[from] sqlx::Error),
     #[error("마이그레이션 오류: {0}")]
@@ -181,21 +191,55 @@ impl Store {
         }
     }
 
-    /// 기기를 등록하거나 이름·플랫폼·마지막 접속 시각을 갱신한다.
+    /// 기기를 등록하거나 이름·플랫폼·마지막 접속 시각·그룹 상태를 갱신한다.
+    /// `retired`인 기기가 `in_group = Some(true)`로 오면 `Retired`(그룹을 떠나야 한다).
+    /// `Some(false)`로 오면 `retired`가 풀린다.
     pub async fn upsert_device(
         &self,
         user_id: &str,
         device_id: &str,
         name: &str,
         platform: &str,
+        in_group: InGroup,
         now: i64,
     ) -> Result<Device> {
         let name = clip(name, 255);
         match self {
-            Store::Memory(m) => m.upsert_device(user_id, device_id, &name, platform, now),
+            Store::Memory(m) => m.upsert_device(user_id, device_id, &name, platform, in_group, now),
             Store::Maria(m) => {
-                retry_deadlock(|| m.upsert_device(user_id, device_id, &name, platform, now)).await
+                retry_deadlock(|| {
+                    m.upsert_device(user_id, device_id, &name, platform, in_group, now)
+                })
+                .await
             }
+        }
+    }
+
+    /// 처음부터 다시 시작(F44): 이 계정의 다른 기기 중 그룹에 있던 것을 `retired`로 표시한다.
+    /// 이 기기는 그다음 새 그룹을 만들고 `in_group = true`로 등록한다. 바뀐 기기 수를 돌려준다.
+    pub async fn restart_group(&self, user_id: &str, device_id: &str) -> Result<u64> {
+        match self {
+            Store::Memory(m) => {
+                let mut g = m.lock();
+                if !g.users.contains_key(user_id) {
+                    return Err(StoreError::NoUser);
+                }
+                let mut n = 0;
+                for (u, d) in g.devices.iter_mut() {
+                    if u != user_id {
+                        continue;
+                    }
+                    if d.device_id == device_id {
+                        d.retired = false;
+                    } else if d.in_group {
+                        d.in_group = false;
+                        d.retired = true;
+                        n += 1;
+                    }
+                }
+                Ok(n)
+            }
+            Store::Maria(m) => retry_deadlock(|| m.restart_group(user_id, device_id)).await,
         }
     }
 
@@ -617,6 +661,7 @@ impl MemStore {
         device_id: &str,
         name: &str,
         platform: &str,
+        in_group: InGroup,
         now: i64,
     ) -> Result<Device> {
         let mut g = self.lock();
@@ -628,9 +673,16 @@ impl MemStore {
             .iter_mut()
             .find(|(u, d)| u == user_id && d.device_id == device_id)
         {
+            if d.retired && in_group == Some(true) {
+                return Err(StoreError::Retired);
+            }
             d.name = name.into();
             d.platform = platform.into();
             d.last_seen_ms = now;
+            if let Some(on) = in_group {
+                d.in_group = on;
+                d.retired = false;
+            }
             return Ok(d.clone());
         }
         if g.devices.iter().filter(|(u, _)| u == user_id).count() >= MAX_DEVICES {
@@ -642,6 +694,8 @@ impl MemStore {
             platform: platform.into(),
             created_at_ms: now,
             last_seen_ms: now,
+            in_group: in_group.unwrap_or(false),
+            retired: false,
         };
         g.devices.push((user_id.into(), d.clone()));
         Ok(d)
@@ -819,8 +873,13 @@ fn device_from_row(r: &sqlx::mysql::MySqlRow) -> Result<Device> {
         platform: r.try_get("platform")?,
         created_at_ms: r.try_get("created_at_ms")?,
         last_seen_ms: r.try_get("last_seen_ms")?,
+        in_group: r.try_get::<i8, _>("in_group")? != 0,
+        retired: r.try_get::<i8, _>("retired")? != 0,
     })
 }
+
+const DEVICE_COLUMNS: &str =
+    "device_id, name, platform, created_at_ms, last_seen_ms, in_group, retired";
 
 impl MariaStore {
     async fn upsert_user(&self, who: &Identity, now: i64) -> Result<User> {
@@ -859,10 +918,10 @@ impl MariaStore {
     }
 
     async fn devices(&self, user_id: &str) -> Result<Vec<Device>> {
-        let rows = sqlx::query(
-            "SELECT device_id, name, platform, created_at_ms, last_seen_ms FROM devices \
-             WHERE user_id = ? ORDER BY created_at_ms, device_id",
-        )
+        let rows = sqlx::query(&format!(
+            "SELECT {DEVICE_COLUMNS} FROM devices \
+             WHERE user_id = ? ORDER BY created_at_ms, device_id"
+        ))
         .bind(user_id)
         .fetch_all(&self.pool)
         .await?;
@@ -875,6 +934,7 @@ impl MariaStore {
         device_id: &str,
         name: &str,
         platform: &str,
+        in_group: InGroup,
         now: i64,
     ) -> Result<Device> {
         let mut tx = self.pool.begin().await?;
@@ -885,19 +945,31 @@ impl MariaStore {
         if user.is_none() {
             return Err(StoreError::NoUser);
         }
-        let updated = sqlx::query(
-            "UPDATE devices SET name = ?, platform = ?, last_seen_ms = ? \
-             WHERE user_id = ? AND device_id = ?",
-        )
-        .bind(name)
-        .bind(platform)
-        .bind(now)
-        .bind(user_id)
-        .bind(device_id)
-        .execute(&mut *tx)
-        .await?
-        .rows_affected();
-        if updated == 0 {
+        let existing =
+            sqlx::query("SELECT retired FROM devices WHERE user_id = ? AND device_id = ?")
+                .bind(user_id)
+                .bind(device_id)
+                .fetch_optional(&mut *tx)
+                .await?;
+        if let Some(row) = &existing {
+            if row.try_get::<i8, _>("retired")? != 0 && in_group == Some(true) {
+                return Err(StoreError::Retired);
+            }
+            sqlx::query(
+                "UPDATE devices SET name = ?, platform = ?, last_seen_ms = ?, \
+                 in_group = COALESCE(?, in_group), retired = IF(? IS NULL, retired, 0) \
+                 WHERE user_id = ? AND device_id = ?",
+            )
+            .bind(name)
+            .bind(platform)
+            .bind(now)
+            .bind(in_group)
+            .bind(in_group)
+            .bind(user_id)
+            .bind(device_id)
+            .execute(&mut *tx)
+            .await?;
+        } else {
             let count: i64 = sqlx::query("SELECT COUNT(*) AS n FROM devices WHERE user_id = ?")
                 .bind(user_id)
                 .fetch_one(&mut *tx)
@@ -907,8 +979,8 @@ impl MariaStore {
                 return Err(StoreError::TooManyDevices);
             }
             sqlx::query(
-                "INSERT INTO devices (user_id, device_id, name, platform, created_at_ms, last_seen_ms) \
-                 VALUES (?, ?, ?, ?, ?, ?)",
+                "INSERT INTO devices (user_id, device_id, name, platform, created_at_ms, last_seen_ms, in_group) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?)",
             )
             .bind(user_id)
             .bind(device_id)
@@ -916,19 +988,46 @@ impl MariaStore {
             .bind(platform)
             .bind(now)
             .bind(now)
+            .bind(in_group.unwrap_or(false))
             .execute(&mut *tx)
             .await?;
         }
-        let row = sqlx::query(
-            "SELECT device_id, name, platform, created_at_ms, last_seen_ms FROM devices \
-             WHERE user_id = ? AND device_id = ?",
-        )
+        let row = sqlx::query(&format!(
+            "SELECT {DEVICE_COLUMNS} FROM devices WHERE user_id = ? AND device_id = ?"
+        ))
         .bind(user_id)
         .bind(device_id)
         .fetch_one(&mut *tx)
         .await?;
         tx.commit().await?;
         device_from_row(&row)
+    }
+
+    async fn restart_group(&self, user_id: &str, device_id: &str) -> Result<u64> {
+        let mut tx = self.pool.begin().await?;
+        let user = sqlx::query("SELECT id FROM users WHERE id = ? FOR UPDATE")
+            .bind(user_id)
+            .fetch_optional(&mut *tx)
+            .await?;
+        if user.is_none() {
+            return Err(StoreError::NoUser);
+        }
+        let n = sqlx::query(
+            "UPDATE devices SET in_group = 0, retired = 1 \
+             WHERE user_id = ? AND device_id <> ? AND in_group = 1",
+        )
+        .bind(user_id)
+        .bind(device_id)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+        sqlx::query("UPDATE devices SET retired = 0 WHERE user_id = ? AND device_id = ?")
+            .bind(user_id)
+            .bind(device_id)
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        Ok(n)
     }
 
     async fn insert_refresh(

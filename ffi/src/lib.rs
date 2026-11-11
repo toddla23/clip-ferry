@@ -10,6 +10,9 @@
 //!      모든 릴레이 연결에 접속 토큰을 싣는다(`account`).
 //! F37: 계정 연결. 세션이 계정 채널을 듣고 새 기기의 요청을 알린다(`on_link_request`),
 //!      새 기기는 `start_link_join`으로 QR·코드 없이 참여를 요청한다.
+//! F44: 계정 하나당 그룹 하나. 기기 등록 때 그룹에 있는지 알리고(`account_has_group`),
+//!      처음부터 다시 시작(`restart_group`)하면 다른 기기는 예전 그룹을 떠난다(`on_group_retired`).
+//!      앱 화면은 QR·코드 페어링(`start_invite`·`start_join`·`qr_matrix`)을 쓰지 않는다(시험용으로 남김).
 
 mod account;
 
@@ -27,7 +30,7 @@ use clip_ferry_core::store::{SecretStore, StoreError};
 use clip_ferry_core::transfer;
 use clip_ferry_core::transport::{TokenSource, TransportConfig};
 
-use crate::account::{Account, TokenError};
+use crate::account::{Account, Registered, TokenError};
 
 /// 계정 서버에 알리는 이 기기의 플랫폼 이름
 const PLATFORM: &str = if cfg!(target_os = "ios") {
@@ -200,6 +203,30 @@ pub trait CoreEvents: Send + Sync {
     /// 같은 계정의 새 기기가 참여를 요청했다(F37, 참여 확인서는 확인했다). 셸은 알림·카드를 띄우고,
     /// 사용자가 응하면 `accept_link_request`, 아니면 `dismiss_link_request`를 부른다.
     fn on_link_request(&self, peer_name: String);
+    /// 다른 기기에서 처음부터 다시 시작해(F44) 이 기기는 예전 그룹을 떠났다. 세션은 이미 닫았다.
+    /// 셸은 첫 화면으로 가서 `message`를 보여 준다.
+    fn on_group_retired(&self, message: String);
+}
+
+const RETIRED_MESSAGE: &str = "다른 기기에서 '처음부터 다시 시작'을 해서 이 기기는 예전 그룹에서 나왔습니다. '이 계정의 다른 기기로 연결'로 새 그룹에 들어오세요";
+
+/// 되살릴 수 없는 로컬 상태(앱 데이터만 지워짐·손상)를 지운다(F44). `ClipFerryClient::open`이
+/// 그런 오류로 실패했을 때 셸이 사용자에게 묻고 부른 뒤 다시 연다. 로그인 정보는 지우지 않는다.
+#[uniffi::export]
+pub fn reset_local_data(data_dir: String, vault: Arc<dyn SecretVault>) -> Result<(), FfiError> {
+    Ok(ClipFerry::reset_local(
+        &Config {
+            data_dir: PathBuf::from(data_dir),
+        },
+        &VaultAdapter(vault),
+    )?)
+}
+
+/// `open`의 오류가 `reset_local_data`로만 풀리는 것인가 (상태와 비밀 저장소가 맞지 않거나 손상됨).
+#[uniffi::export]
+pub fn is_unrecoverable_state(error: &FfiError) -> bool {
+    matches!(error, FfiError::Failed { reason } if reason == &Error::StateInconsistent.to_string()
+        || reason == &Error::StateCorrupt.to_string())
 }
 
 /// 화면에 보여 줄 로그인 정보. 토큰은 들어 있지 않다.
@@ -416,9 +443,46 @@ impl ClipFerryClient {
         Ok(self.app.init_device(device_name.trim())?)
     }
 
-    /// 에포크 1의 새 그룹을 만든다. 구성원은 이 기기뿐이다.
+    /// 에포크 1의 새 그룹을 만든다. 구성원은 이 기기뿐이다. 셸은 `account_has_group`이
+    /// `Some(false)`일 때만 보여 준다(F44, 계정 하나당 그룹 하나).
     pub fn create_group(&self) -> Result<(), FfiError> {
-        Ok(self.app.create_group()?)
+        self.app.create_group()?;
+        // 다음 `start`에서 그룹에 있다고 다시 알린다.
+        self.registered.store(false, Ordering::SeqCst);
+        Ok(())
+    }
+
+    /// 이 계정에 그룹에 있는 다른 기기가 있는가 (F44). 계정 서버에 닿지 않으면 `None`.
+    /// 네트워크를 쓰므로 메인 스레드가 아닌 곳에서 부른다.
+    pub fn account_has_group(&self) -> Option<bool> {
+        let own = self.device_hex().unwrap_or_default();
+        self.runtime
+            .block_on(self.account.account_has_group(&own))
+            .ok()
+    }
+
+    /// 처음부터 다시 시작 (F44, D-027): 승인해 줄 기기가 없을 때. 이 계정의 다른 기기를 예전
+    /// 그룹으로 표시하고(다음에 켜질 때 떠난다) 이 기기에서 새 그룹을 만든다. 기기가 먼저 있어야 한다
+    /// (`init_device`). 그다음 셸은 `start`로 연결한다. 메인 스레드가 아닌 곳에서 부른다.
+    pub fn restart_group(&self) -> Result<(), FfiError> {
+        let id = self
+            .device_hex()
+            .ok_or_else(|| failed("기기를 먼저 만드세요".into()))?;
+        self.runtime
+            .block_on(self.account.restart_group(&id))
+            .map_err(|e| match e {
+                TokenError::SignedOut => {
+                    failed("로그인이 만료되었습니다. 다시 로그인하세요".into())
+                }
+                TokenError::Unavailable => {
+                    failed("서버에 연결하지 못했습니다. 잠시 뒤 다시 시도하세요".into())
+                }
+            })?;
+        if self.app.status()?.epoch.is_none() {
+            self.app.create_group()?;
+        }
+        self.registered.store(false, Ordering::SeqCst);
+        Ok(())
     }
 
     /// 릴레이에 연결할 수 있는 그룹이 있는가 (제거된 기기는 `false`).
@@ -457,7 +521,12 @@ impl ClipFerryClient {
     pub fn leave_group(&self) -> Result<(), FfiError> {
         self.stop();
         self.cancel_pairing();
-        Ok(self.app.leave_group()?)
+        self.app.leave_group()?;
+        // 그룹에 없다고 알린다(F44). 다음 `start`에서 다시 알린다.
+        self.registered.store(false, Ordering::SeqCst);
+        self.register_device_once(None);
+        self.registered.store(false, Ordering::SeqCst);
+        Ok(())
     }
 
     /// 릴레이에 (다시) 연결하는 세션을 시작한다. 이미 있으면 닫고 새로 연다.
@@ -468,6 +537,7 @@ impl ClipFerryClient {
             return Err(not_signed_in());
         }
         let config = self.transport_config(Some(events.clone()));
+        let events_for_retire = events.clone();
         let _guard = self.runtime.enter();
         let mut slot = self.session.lock().unwrap();
         *slot = None;
@@ -486,7 +556,7 @@ impl ClipFerryClient {
         session.set_account_link(self.account_link.lock().unwrap().clone());
         *slot = Some(session.clone());
         drop(slot);
-        self.register_device_once();
+        self.register_device_once(Some(events_for_retire));
         self.listen_account(&session);
         Ok(())
     }
@@ -657,6 +727,8 @@ impl ClipFerryClient {
             return Err(not_signed_in());
         }
         let (sign_pub, dh_pub, name) = self.app.link_identity()?;
+        // 들어간 뒤 `start`에서 그룹에 있다고 알린다 (F44)
+        self.registered.store(false, Ordering::SeqCst);
         let ticket = self
             .runtime
             .block_on(self.account.link_ticket(&sign_pub, &dh_pub, &name))
@@ -783,27 +855,53 @@ impl ClipFerryClient {
         }
     }
 
-    /// 이 기기를 계정의 기기 목록에 올린다(이름·플랫폼). 실패해도 동작에는 상관없다.
-    fn register_device_once(&self) {
+    /// 이 기기의 전체 ID (계정 서버의 기기 목록에 쓰는 32자리 hex). 기기가 아직 없으면 `None`.
+    fn device_hex(&self) -> Option<String> {
+        let status = self.app.status().ok()?;
+        Some(
+            status
+                .device_id
+                .0
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect(),
+        )
+    }
+
+    /// 이 기기를 계정의 기기 목록에 올린다(이름·플랫폼·그룹에 있는지, F44). 실패해도 동작에는
+    /// 상관없다. 다른 기기에서 처음부터 다시 시작했으면 예전 그룹을 떠나고 `events`에 알린다.
+    fn register_device_once(&self, events: Option<Arc<dyn CoreEvents>>) {
         if self.registered.swap(true, Ordering::SeqCst) {
             return;
         }
-        let Ok(status) = self.app.status() else {
+        let (Ok(status), Some(id)) = (self.app.status(), self.device_hex()) else {
             self.registered.store(false, Ordering::SeqCst);
             return;
         };
-        let id: String = status
-            .device_id
-            .0
-            .iter()
-            .map(|b| format!("{b:02x}"))
-            .collect();
-        let name = status.device_name;
+        let (name, in_group) = (status.device_name, status.epoch.is_some());
         let account = self.account.clone();
         let registered = self.registered.clone();
+        let app = self.app.clone();
+        let session = self.session.clone();
+        let online = self.online.clone();
         self.runtime.spawn(async move {
-            if account.register_device(&id, &name, PLATFORM).await.is_err() {
-                registered.store(false, Ordering::SeqCst);
+            match account
+                .register_device(&id, &name, PLATFORM, in_group)
+                .await
+            {
+                Ok(Registered::Ok) => {}
+                Ok(Registered::Retired) => {
+                    let closed = session.lock().unwrap().take();
+                    drop(closed);
+                    online.lock().unwrap().clear();
+                    let _ = app.leave_group();
+                    let _ = account.register_device(&id, &name, PLATFORM, false).await;
+                    registered.store(false, Ordering::SeqCst);
+                    if let Some(events) = events {
+                        events.on_group_retired(RETIRED_MESSAGE.into());
+                    }
+                }
+                Err(_) => registered.store(false, Ordering::SeqCst),
             }
         });
     }
@@ -944,6 +1042,7 @@ mod tests {
         auth_rejected: Mutex<u32>,
         signed_out: Mutex<Vec<String>>,
         link_requests: Mutex<Vec<String>>,
+        retired: Mutex<Vec<String>>,
     }
 
     impl CoreEvents for Recorder {
@@ -968,6 +1067,9 @@ mod tests {
         }
         fn on_link_request(&self, peer_name: String) {
             self.link_requests.lock().unwrap().push(peer_name);
+        }
+        fn on_group_retired(&self, message: String) {
+            self.retired.lock().unwrap().push(message);
         }
     }
 
@@ -1188,6 +1290,80 @@ mod tests {
             .client
             .accept_link_request(url, Arc::new(PairRecorder::default()))
             .is_err());
+    }
+
+    /// F44: 계정 하나당 그룹 하나. 새 폰이 처음부터 다시 시작하면 예전 PC는 다음 연결 때 그룹을 떠난다.
+    #[test]
+    fn restart_retires_the_old_group() {
+        let (_rt, _relay, url) = relay();
+        // 다른 시험과 섞이지 않게 이 시험만의 계정
+        let email = format!("restart-{}@test.dev", clip_ferry_account::random_id());
+        let login = |p: &Phone| {
+            p.client
+                .login_dev(account_server().url.clone(), email.clone())
+                .unwrap();
+        };
+        let pc = signed_out_phone("PC", true);
+        login(&pc);
+        let fresh = signed_out_phone("새 폰", false);
+        login(&fresh);
+        assert_eq!(fresh.client.account_has_group(), Some(false));
+
+        let pc_events = Arc::new(Recorder::default());
+        pc.client.start(url.clone(), pc_events.clone()).unwrap();
+        wait_until(
+            || fresh.client.account_has_group() == Some(true),
+            "PC가 그룹에 있다고 알리지 않음",
+        );
+        assert_eq!(
+            pc.client.account_has_group(),
+            Some(false),
+            "자기 자신은 세지 않는다"
+        );
+
+        // 새 폰: 처음부터 다시 시작 → 새 그룹
+        fresh.client.restart_group().unwrap();
+        assert!(fresh.client.has_group());
+        fresh
+            .client
+            .start(url.clone(), Arc::new(Recorder::default()))
+            .unwrap();
+
+        // PC를 다시 켜면(새 연결) 예전 그룹을 떠난다
+        pc.client.stop();
+        pc.client.registered.store(false, Ordering::SeqCst);
+        pc.client.start(url, pc_events.clone()).unwrap();
+        wait_until(
+            || !pc_events.retired.lock().unwrap().is_empty(),
+            "예전 그룹을 떠나라는 알림이 오지 않음",
+        );
+        assert!(!pc.client.has_group() && !pc.client.is_running());
+        assert_eq!(
+            pc.client.account_has_group(),
+            Some(true),
+            "새 폰의 그룹이 있다"
+        );
+    }
+
+    /// F44: 앱 데이터만 지워져 키가 남았으면 열리지 않고, 지운 뒤 다시 열면 처음 상태다.
+    #[test]
+    fn reset_local_data_after_inconsistent_state() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().display().to_string();
+        let vault = Arc::new(MemVault::default());
+        let client = ClipFerryClient::open(path.clone(), vault.clone()).unwrap();
+        client.init_device("폰".into()).unwrap();
+        client.create_group().unwrap();
+        drop(client);
+        std::fs::remove_file(dir.path().join("state.bin")).unwrap();
+        let Err(err) = ClipFerryClient::open(path.clone(), vault.clone()) else {
+            panic!("상태 파일 없이 열림");
+        };
+        assert!(is_unrecoverable_state(&err));
+        assert!(!is_unrecoverable_state(&FfiError::Removed));
+        reset_local_data(path.clone(), vault.clone()).unwrap();
+        let client = ClipFerryClient::open(path, vault).unwrap();
+        assert!(!client.is_initialized());
     }
 
     /// 다른 계정의 기기는 요청을 보내도 알림이 오지 않는다.

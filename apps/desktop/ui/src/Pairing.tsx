@@ -1,26 +1,7 @@
-import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type { PairingView } from "./types";
 
 const spaced = (sas: string) => `${sas.slice(0, 3)} ${sas.slice(3)}`;
-
-function useNow(intervalMs: number) {
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    const t = setInterval(() => setNow(Date.now()), intervalMs);
-    return () => clearInterval(t);
-  }, [intervalMs]);
-  return now;
-}
-
-function Remaining({ expiresAtMs }: { expiresAtMs: number }) {
-  const left = Math.max(0, Math.ceil((expiresAtMs - useNow(500)) / 1000));
-  const mm = Math.floor(left / 60);
-  const ss = String(left % 60).padStart(2, "0");
-  return (
-    <span data-testid="remaining">{left === 0 ? "만료됨" : `남은 시간 ${mm}:${ss}`}</span>
-  );
-}
 
 function Sas({ value }: { value: string }) {
   return (
@@ -32,19 +13,8 @@ function Sas({ value }: { value: string }) {
 
 const close = () => invoke("close_pairing");
 
-// 다른 기기를 초대하는 화면 (QR + 코드 → 요청 확인 → 결과).
+// 같은 계정의 새 기기를 받아들이는 화면 (요청 확인 → 결과, F37).
 export function InviteScreen({ p }: { p: PairingView }) {
-  const [copied, setCopied] = useState(false);
-
-  async function copy() {
-    try {
-      await navigator.clipboard.writeText(p.textCode ?? "");
-      setCopied(true);
-    } catch {
-      setCopied(false);
-    }
-  }
-
   if (p.phase === "request") {
     return (
       <main>
@@ -99,47 +69,13 @@ export function InviteScreen({ p }: { p: PairingView }) {
     );
   }
 
-  // 계정 연결(F37): QR·코드 없이 새 기기의 응답을 기다린다.
-  if (!p.textCode) {
-    return (
-      <main>
-        <h1>기기 연결</h1>
-        <p className="note" data-testid="message">
-          <b>{p.peerName}</b> 기기에 연결하는 중입니다. {p.message}
-        </p>
-        <button className="secondary" data-testid="cancel" onClick={close}>
-          취소
-        </button>
-      </main>
-    );
-  }
-
+  // 계정 연결(F37): 새 기기의 응답을 기다린다.
   return (
     <main>
-      <h1>기기 추가</h1>
-      <p className="note">
-        새 기기에서 clip-ferry를 열고 QR을 스캔하거나 아래 코드를 입력하세요. 코드는 한 번만, 10분
-        동안 쓸 수 있습니다.
+      <h1>기기 연결</h1>
+      <p className="note" data-testid="message">
+        <b>{p.peerName}</b> 기기에 연결하는 중입니다. {p.message}
       </p>
-      {p.qr && (
-        <svg
-          className="qr"
-          viewBox={`-2 -2 ${p.qr.width + 4} ${p.qr.width + 4}`}
-          shapeRendering="crispEdges"
-          role="img"
-          aria-label="초대 QR 코드"
-        >
-          <rect x={-2} y={-2} width={p.qr.width + 4} height={p.qr.width + 4} fill="#fff" />
-          <path d={p.qr.path} fill="#000" />
-        </svg>
-      )}
-      <textarea className="code" readOnly rows={3} value={p.textCode ?? ""} data-testid="code" />
-      <div className="row between">
-        <button className="secondary" onClick={copy}>
-          {copied ? "복사했습니다" : "코드 복사"}
-        </button>
-        {p.expiresAtMs && <Remaining expiresAtMs={p.expiresAtMs} />}
-      </div>
       <button className="secondary" data-testid="cancel" onClick={close}>
         취소
       </button>
@@ -147,7 +83,7 @@ export function InviteScreen({ p }: { p: PairingView }) {
   );
 }
 
-// 초대 코드로 참여하는 화면 (연결 → 확인 숫자 → 결과).
+// 같은 계정의 다른 기기로 참여하는 화면 (연결 → 확인 숫자 → 결과).
 export function JoinScreen({ p }: { p: PairingView }) {
   if (p.phase === "failed") {
     return (
